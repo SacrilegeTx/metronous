@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/kiosvantra/metronous/internal/config"
 	"github.com/kiosvantra/metronous/internal/store"
 )
 
@@ -63,18 +64,25 @@ type TrackingModel struct {
 
 // Column header widths.
 var (
-	colWidths = []int{20, 16, 12, 22, 8, 8, 14}
-	colNames  = []string{"Time", "Agent", "Type", "Model", "In", "Out", "Spent(total)"}
+	colWidths = []int{20, 16, 12, 22, 8, 8, 14, 10, 10}
+	colNames  = []string{"Time", "Agent", "Type", "Model", "In(accum)", "Out(accum)", "Spent(total)", "Session", "Dur"}
 
-	headerStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
-	errStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	dimStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	cursorStyle        = lipgloss.NewStyle().Background(lipgloss.Color("236"))
-	spentTotalRedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	popupBgStyle       = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("33")).
-				Padding(0, 1)
+	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
+	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	cursorStyle = lipgloss.NewStyle().Background(lipgloss.Color("236"))
+	// Very light gray so low-cost sessions do not feel "disabled".
+	spentOkStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+	spentWarnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	spentBadStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+
+	sevGreenStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("82"))
+	sevAmberStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	sevRedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	popupBgStyle  = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("33")).
+			Padding(0, 1)
 	popupHeaderStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
 	popupDimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	popupRowStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
@@ -333,11 +341,12 @@ func (m *TrackingModel) renderBackground() string {
 	for ri, s := range m.sessions {
 		isCursor := ri == m.cursor
 		cells := formatSessionRow(s)
-		style := lipgloss.NewStyle()
+		baseStyle := lipgloss.NewStyle()
 		if isCursor {
-			style = cursorStyle
+			baseStyle = cursorStyle
 		}
-		sb.WriteString(renderRowMain(cells, colWidths, style))
+		spentStyle, durationStyle := severityStylesForCostAndDuration(s.CostUSD, s.DurationMs)
+		sb.WriteString(renderSessionRowMain(cells, colWidths, baseStyle, isCursor, spentStyle, durationStyle))
 		sb.WriteString("\n")
 	}
 
@@ -492,7 +501,24 @@ func formatSessionRow(s store.SessionSummary) []string {
 		spent = fmt.Sprintf("$%.4f", *s.CostUSD)
 	}
 
-	return []string{ts, s.AgentID, "complete", s.Model, in, out, spent}
+	sessionShort := shortSessionID(s.SessionID)
+
+	durationCell := "-"
+	if s.DurationMs != nil && *s.DurationMs > 0 {
+		secs := float64(*s.DurationMs) / 1000.0
+		// Keep compact so the table stays readable.
+		durationCell = fmt.Sprintf("[%.2fs]", secs)
+	}
+
+	return []string{ts, s.AgentID, "complete", s.Model, in, out, spent, sessionShort, durationCell}
+}
+
+func shortSessionID(sid string) string {
+	const n = 8
+	if len(sid) <= n {
+		return sid
+	}
+	return sid[len(sid)-n:]
 }
 
 // formatEventRowCompact converts a store.Event into compact display columns (for popup).
@@ -520,7 +546,6 @@ func formatEventRowCompact(ev store.Event) []string {
 // It colorizes the Spent column (values that look like $...) in bright red.
 func renderRowMain(cols []string, widths []int, style lipgloss.Style) string {
 	var sb strings.Builder
-	spentCol := 6
 	for i, col := range cols {
 		if i >= len(widths) {
 			break
@@ -531,10 +556,73 @@ func renderRowMain(cols []string, widths []int, style lipgloss.Style) string {
 			cell = cell[:w-1] + "…"
 		}
 
-		cellStyle := style
-		if i == spentCol && strings.HasPrefix(strings.TrimSpace(cell), "$") {
-			cellStyle = style.Copy().Foreground(lipgloss.Color("196"))
+		sb.WriteString(style.Render(fmt.Sprintf("%-*s", w, cell)))
+		sb.WriteString(" ")
+	}
+	return sb.String()
+}
+
+func severityStylesForCostAndDuration(costUSD *float64, durationMs *int) (spentStyle lipgloss.Style, durationStyle lipgloss.Style) {
+	// Spent semaforo is based on configured cost thresholds.
+	// We use defaults here because Tracking has no direct access to live config changes.
+	t := config.DefaultThresholdValues()
+	maxCost := t.Defaults.MaxCostUSDPerSession
+	spikeMult := t.UrgentTriggers.MaxCostSpikeMultiplier
+	maxSpike := maxCost * spikeMult
+
+	spentStyle = spentOkStyle
+	if costUSD == nil || *costUSD <= 0 {
+		// Keep low cost style for empty/unknown.
+		spentStyle = spentOkStyle
+	} else {
+		if *costUSD > maxSpike {
+			spentStyle = spentBadStyle
+		} else if *costUSD > maxCost {
+			spentStyle = spentWarnStyle
+		} else {
+			spentStyle = spentOkStyle
 		}
+	}
+
+	// Duration semaforo (for latency-ish proxy).
+	durationStyle = sevRedStyle
+	if durationMs == nil || *durationMs <= 0 {
+		return spentStyle, durationStyle
+	}
+
+	secs := float64(*durationMs) / 1000.0
+	if secs <= 10.0 {
+		return spentStyle, sevGreenStyle
+	}
+	if secs <= 30.0 {
+		return spentStyle, sevAmberStyle
+	}
+	return spentStyle, sevRedStyle
+}
+
+func renderSessionRowMain(cols []string, widths []int, baseStyle lipgloss.Style, isCursor bool, spentStyle, durationStyle lipgloss.Style) string {
+	var sb strings.Builder
+	spentCol := 6
+	durationCol := 8
+
+	for i, col := range cols {
+		if i >= len(widths) {
+			break
+		}
+		w := widths[i]
+		cell := col
+		if len(cell) > w {
+			cell = cell[:w-1] + "…"
+		}
+
+		cellStyle := baseStyle
+		if i == spentCol {
+			cellStyle = spentStyle
+		}
+		if i == durationCol {
+			cellStyle = durationStyle
+		}
+
 		sb.WriteString(cellStyle.Render(fmt.Sprintf("%-*s", w, cell)))
 		sb.WriteString(" ")
 	}
