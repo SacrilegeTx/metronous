@@ -35,6 +35,45 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Compute next tag
+        id: version
+        run: |
+          python .github/scripts/bump-version.py --out-version version.txt --out-notes release_notes.md
+          NEXT_TAG=$(cat version.txt | tr -d '\n')
+          PREV_TAG=$(git tag --list "v[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname | head -n 1)
+          echo "next_tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create local tag
+        run: |
+          # Ensure git identity so annotated tags can be created.
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          NEXT_TAG="${{ steps.version.outputs.next_tag }}"
+          if git show-ref --tags --verify --quiet "refs/tags/$NEXT_TAG"; then
+            echo "Tag $NEXT_TAG already exists locally"
+          else
+            git tag -a "$NEXT_TAG" -m "Release $NEXT_TAG"
+          fi
+
+      - name: Push tag to GitHub
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEXT_TAG="${{ steps.version.outputs.next_tag }}"
+          # Duplicate pushes are ignored by git.
+          git push origin "$NEXT_TAG"
+
+      - name: Cleanup workspace before GoReleaser
+        run: |
+          # GoReleaser fails on a dirty git working tree.
+          rm -f version.txt release_notes.md || true
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -47,3 +86,8 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup workspace
+        if: always()
+        run: |
+          rm -f version.txt release_notes.md || true

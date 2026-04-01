@@ -32,7 +32,7 @@ type summaryRow struct {
 	Runs         int     // total benchmark runs
 	AvgAccuracy  float64 // weighted average accuracy
 	AvgP95Ms     float64 // weighted average P95 latency
-	TotalCostUSD float64 // sum of all run costs
+	TotalCostUSD float64 // cost from the run used for LastVerdict
 	HealthScore  float64 // composite 0-100 (higher is better)
 	LastVerdict  store.VerdictType
 	LastRunAt    time.Time
@@ -42,7 +42,7 @@ type summaryRow struct {
 // Columns: Agent | Model | Runs | Accuracy | P95 | Total Cost | Health | Last Verdict
 var (
 	summaryColWidths = []int{18, 22, 5, 10, 12, 12, 8, 20}
-	summaryColNames  = []string{"Agent", "Model", "Runs", "Accuracy", "P95 Latency", "Total Cost", "Health", "Last Verdict"}
+	summaryColNames  = []string{"Agent", "Model", "Runs", "Accuracy", "P95 Latency", "Last Cost", "Health", "Last Verdict"}
 )
 
 // healthStyle returns a colour for the health score (0-100).
@@ -59,11 +59,29 @@ func healthStyle(score float64) lipgloss.Style {
 
 // BenchmarkSummaryModel is the Bubble Tea sub-model for the benchmark summary tab.
 type BenchmarkSummaryModel struct {
-	bs      store.BenchmarkStore
-	rows    []summaryRow
-	err     error
-	cursor  int
-	loading bool
+	bs            store.BenchmarkStore
+	rows          []summaryRow
+	err           error
+	cursor        int
+	offset        int
+	loading       bool
+	lastViewLines int
+}
+
+const maxSummaryRows = 10
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // NewBenchmarkSummaryModel creates a BenchmarkSummaryModel wired to the given BenchmarkStore.
@@ -71,6 +89,7 @@ func NewBenchmarkSummaryModel(bs store.BenchmarkStore) BenchmarkSummaryModel {
 	return BenchmarkSummaryModel{
 		bs:      bs,
 		loading: true,
+		offset:  0,
 	}
 }
 
@@ -107,6 +126,21 @@ func (m BenchmarkSummaryModel) Update(msg tea.Msg) (BenchmarkSummaryModel, tea.C
 					m.cursor = 0
 				}
 			}
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+			// Clamp offset so cursor is visible.
+			if m.cursor < m.offset {
+				m.offset = m.cursor
+			}
+			if m.cursor >= m.offset+maxSummaryRows {
+				m.offset = m.cursor - (maxSummaryRows - 1)
+			}
+			// Clamp offset to valid range.
+			maxOffset := maxInt(0, len(m.rows)-maxSummaryRows)
+			if m.offset > maxOffset {
+				m.offset = maxOffset
+			}
 		}
 		return m, nil
 
@@ -115,10 +149,16 @@ func (m BenchmarkSummaryModel) Update(msg tea.Msg) (BenchmarkSummaryModel, tea.C
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
+				if m.cursor < m.offset {
+					m.offset = m.cursor
+				}
 			}
 		case "down", "j":
 			if m.cursor < len(m.rows)-1 {
 				m.cursor++
+				if m.cursor >= m.offset+maxSummaryRows {
+					m.offset = m.cursor - (maxSummaryRows - 1)
+				}
 			}
 		}
 	}
@@ -149,7 +189,7 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 			totalSamples int
 			sumAccuracy  float64
 			sumP95       float64
-			totalCost    float64
+			lastCostUSD  float64
 			lastVerdict  store.VerdictType
 			lastRunAt    time.Time
 		}
@@ -186,7 +226,9 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 					a.sumP95 += r.P95LatencyMs * float64(samples)
 				}
 				a.runs++
-				a.totalCost += r.TotalCostUSD
+				// Cost is not accumulated across runs because weekly/intraweek
+				// windows overlap, which would double-count events.
+				// We keep cost aligned with LastVerdict (lastCostUSD).
 
 				// LastVerdict: prefer the most recent non-INSUFFICIENT_DATA verdict.
 				// Falls back to INSUFFICIENT_DATA only if no valid run exists.
@@ -195,10 +237,12 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 						// Non-insufficient run is always a better LastVerdict candidate.
 						a.lastRunAt = r.RunAt
 						a.lastVerdict = r.Verdict
+						a.lastCostUSD = r.TotalCostUSD
 					} else if a.lastVerdict == "" || a.lastVerdict == store.VerdictInsufficientData {
 						// Only use INSUFFICIENT_DATA if we have nothing better yet.
 						a.lastRunAt = r.RunAt
 						a.lastVerdict = r.Verdict
+						a.lastCostUSD = r.TotalCostUSD
 					}
 				}
 			}
@@ -220,7 +264,7 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 				Runs:         a.runs,
 				AvgAccuracy:  avgAcc,
 				AvgP95Ms:     avgP95,
-				TotalCostUSD: a.totalCost,
+				TotalCostUSD: a.lastCostUSD,
 				HealthScore:  health,
 				LastVerdict:  a.lastVerdict,
 				LastRunAt:    a.lastRunAt,
@@ -280,7 +324,7 @@ func max64(a, b float64) float64 {
 }
 
 // View renders the benchmark summary tab.
-func (m BenchmarkSummaryModel) View() string {
+func (m *BenchmarkSummaryModel) View() string {
 	var sb strings.Builder
 
 	sb.WriteString(titleStyle.Render("Benchmark Summary") + "\n\n")
@@ -304,9 +348,24 @@ func (m BenchmarkSummaryModel) View() string {
 	sb.WriteString(strings.Repeat("─", totalWidth(summaryColWidths)) + "\n")
 
 	// Data rows.
-	for i, row := range m.rows {
+	offset := m.offset
+	maxOffset := maxInt(0, len(m.rows)-maxSummaryRows)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > maxOffset {
+		offset = maxOffset
+	}
+	end := minInt(len(m.rows), offset+maxSummaryRows)
+	visible := []summaryRow(nil)
+	if offset < len(m.rows) {
+		visible = m.rows[offset:end]
+	}
+
+	for i, row := range visible {
+		absIdx := offset + i
 		baseStyle := lipgloss.NewStyle()
-		if i == m.cursor {
+		if absIdx == m.cursor {
 			baseStyle = cursorStyle
 		}
 
@@ -340,8 +399,16 @@ func (m BenchmarkSummaryModel) View() string {
 
 	// Footer.
 	sb.WriteString("\n")
-	footer := fmt.Sprintf("  %d agent/model pair(s)  |  ↑↓ to navigate  |  3: switch to Detailed view",
-		len(m.rows))
+	pageNum := 1
+	if len(m.rows) > 0 {
+		pageNum = m.offset/maxSummaryRows + 1
+	}
+	totalPages := 1
+	if len(m.rows) > 0 {
+		totalPages = (len(m.rows) + maxSummaryRows - 1) / maxSummaryRows
+	}
+	footer := fmt.Sprintf("  %d agent/model pair(s)  |  page %d/%d  |  ↑↓ to navigate  |  3: switch to Detailed view",
+		len(m.rows), pageNum, totalPages)
 	sb.WriteString(dimStyle.Render(footer))
 	sb.WriteString("\n")
 
@@ -358,7 +425,7 @@ func (m BenchmarkSummaryModel) View() string {
 		writeDetailField(&sb, "Runs", fmt.Sprintf("%d benchmark run(s)", r.Runs))
 		writeDetailField(&sb, "Accuracy", fmt.Sprintf("%.1f%%  (weighted avg)", r.AvgAccuracy*100))
 		writeDetailField(&sb, "P95", fmt.Sprintf("%.0fms  (weighted avg)", r.AvgP95Ms))
-		writeDetailField(&sb, "Cost", fmt.Sprintf("$%.4f  (total across all runs)", r.TotalCostUSD))
+		writeDetailField(&sb, "Cost", fmt.Sprintf("$%.4f  (from last verdict run)", r.TotalCostUSD))
 		writeDetailField(&sb, "Health", fmt.Sprintf("%.0f / 100", r.HealthScore))
 		writeDetailField(&sb, "Verdict", string(r.LastVerdict))
 		if !r.LastRunAt.IsZero() {
@@ -366,7 +433,15 @@ func (m BenchmarkSummaryModel) View() string {
 		}
 	}
 
-	return sb.String()
+	out := sb.String()
+	// Stabilize output height across cursor moves so the terminal does not show
+	// remnants or cause implicit scrolling.
+	lineCount := strings.Count(out, "\n")
+	if lineCount < m.lastViewLines {
+		out += strings.Repeat("\n", m.lastViewLines-lineCount)
+	}
+	m.lastViewLines = maxInt(m.lastViewLines, lineCount)
+	return out
 }
 
 // formatSummaryRow converts a summaryRow into display columns.

@@ -541,6 +541,17 @@ func (m BenchmarkModel) View() string {
 func renderDetailPanel(run store.BenchmarkRun, pricing map[string]float64, trend []string) string {
 	var sb strings.Builder
 
+	// Prevent terminal auto-wrapping from pushing/popping the main table out of
+	// view when switching rows.
+	const maxDetailValueLen = 120
+	clamp := func(s string) string {
+		s = strings.TrimSpace(s)
+		if len(s) <= maxDetailValueLen {
+			return s
+		}
+		return s[:maxDetailValueLen-1] + "…"
+	}
+
 	divider := strings.Repeat("─", totalWidth(benchColWidths))
 	sb.WriteString(dimStyle.Render(divider) + "\n")
 	sb.WriteString(detailLabelStyle.Render("Decision Rationale") + "\n")
@@ -552,6 +563,12 @@ func renderDetailPanel(run store.BenchmarkRun, pricing map[string]float64, trend
 		writeDetailField(&sb, "Status", "No benchmark runs recorded yet for this agent.")
 		return sb.String()
 	}
+
+	// Avoid multi-line layout shifts from DecisionReason (which can contain
+	// newlines). Keeping the detail panel single-line per field prevents
+	// terminal scrolling artifacts while moving the cursor.
+	reason := strings.ReplaceAll(run.DecisionReason, "\n", " ")
+	reason = clamp(reason)
 
 	// Verdict line: show switch arrow if applicable.
 	verdictLine := string(run.Verdict)
@@ -569,13 +586,13 @@ func renderDetailPanel(run store.BenchmarkRun, pricing map[string]float64, trend
 	writeDetailField(&sb, "Cost", fmt.Sprintf("$%.2f  Savings: %s", run.TotalCostUSD, savingsStr))
 	writeDetailField(&sb, "Samples", fmt.Sprintf("%d events", run.SampleSize))
 	sb.WriteString("\n")
-	writeDetailField(&sb, "Reason", run.DecisionReason)
-	writeDetailField(&sb, "Context", evaluateAgentContext(run))
+	writeDetailField(&sb, "Reason", reason)
+	writeDetailField(&sb, "Context", clamp(evaluateAgentContext(run)))
 
 	// Trend line: show last N verdicts with direction indicator.
 	if len(trend) > 0 {
 		trendStr := formatVerdictTrend(trend)
-		writeDetailField(&sb, "Trend", trendStr)
+		writeDetailField(&sb, "Trend", clamp(trendStr))
 	}
 
 	return sb.String()
