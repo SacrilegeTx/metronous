@@ -64,6 +64,10 @@ tui-debug.log
 # Agent tooling
 .atl/
 
+# OpenCode rules (user-specific, not committed)
+AGENTS.md
+CLAUDE.md
+
 # Environment
 .env
 .env.*
