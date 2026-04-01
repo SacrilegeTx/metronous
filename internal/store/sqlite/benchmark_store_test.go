@@ -525,110 +525,6 @@ func TestQueryRunsOffsetBeyondEnd(t *testing.T) {
 	}
 }
 
-// TestGetRecentRunsAllAgents verifies the window-function-based top-N-per-agent query.
-func TestGetRecentRunsAllAgents(t *testing.T) {
-	ctx := context.Background()
-	base := time.Now().UTC().Truncate(time.Millisecond)
-
-	t.Run("top-N per agent — REQ-04 scenario 1", func(t *testing.T) {
-		bs := newTestBenchmarkStore(t)
-
-		// Insert 5 runs for agent-A and 3 for agent-B.
-		for i := 0; i < 5; i++ {
-			r := sampleRun("agent-A", store.VerdictKeep)
-			r.RunAt = base.Add(time.Duration(-i) * time.Hour)
-			if err := bs.SaveRun(ctx, r); err != nil {
-				t.Fatalf("SaveRun agent-A[%d]: %v", i, err)
-			}
-		}
-		for i := 0; i < 3; i++ {
-			r := sampleRun("agent-B", store.VerdictSwitch)
-			r.RunAt = base.Add(time.Duration(-i) * time.Hour)
-			if err := bs.SaveRun(ctx, r); err != nil {
-				t.Fatalf("SaveRun agent-B[%d]: %v", i, err)
-			}
-		}
-
-		runs, err := bs.GetRecentRunsAllAgents(ctx, 2)
-		if err != nil {
-			t.Fatalf("GetRecentRunsAllAgents: %v", err)
-		}
-		// Expect exactly 2 per agent = 4 total.
-		if len(runs) != 4 {
-			t.Fatalf("expected 4 runs (2 per agent), got %d", len(runs))
-		}
-
-		// Count by agent.
-		counts := make(map[string]int)
-		for _, r := range runs {
-			counts[r.AgentID]++
-		}
-		if counts["agent-A"] != 2 {
-			t.Errorf("agent-A: expected 2 runs, got %d", counts["agent-A"])
-		}
-		if counts["agent-B"] != 2 {
-			t.Errorf("agent-B: expected 2 runs, got %d", counts["agent-B"])
-		}
-	})
-
-	t.Run("topN exceeds available runs — REQ-04 scenario 2", func(t *testing.T) {
-		bs := newTestBenchmarkStore(t)
-
-		// Only 1 run for agent-A.
-		r := sampleRun("agent-A", store.VerdictKeep)
-		r.RunAt = base
-		if err := bs.SaveRun(ctx, r); err != nil {
-			t.Fatalf("SaveRun: %v", err)
-		}
-
-		runs, err := bs.GetRecentRunsAllAgents(ctx, 5)
-		if err != nil {
-			t.Fatalf("GetRecentRunsAllAgents: %v", err)
-		}
-		// Only 1 run exists — must return 1, no padding.
-		if len(runs) != 1 {
-			t.Fatalf("expected 1 run (no padding), got %d", len(runs))
-		}
-		if runs[0].AgentID != "agent-A" {
-			t.Errorf("expected agent-A, got %q", runs[0].AgentID)
-		}
-	})
-
-	t.Run("empty store — REQ-04 scenario 3", func(t *testing.T) {
-		bs := newTestBenchmarkStore(t)
-
-		runs, err := bs.GetRecentRunsAllAgents(ctx, 4)
-		if err != nil {
-			t.Fatalf("GetRecentRunsAllAgents on empty store: %v", err)
-		}
-		if len(runs) != 0 {
-			t.Errorf("expected empty slice, got %d runs", len(runs))
-		}
-	})
-
-	t.Run("default topN=4 when zero passed", func(t *testing.T) {
-		bs := newTestBenchmarkStore(t)
-
-		// Insert 6 runs for one agent.
-		for i := 0; i < 6; i++ {
-			r := sampleRun("agent-C", store.VerdictKeep)
-			r.RunAt = base.Add(time.Duration(-i) * time.Hour)
-			if err := bs.SaveRun(ctx, r); err != nil {
-				t.Fatalf("SaveRun[%d]: %v", i, err)
-			}
-		}
-
-		// topNPerAgent=0 should default to 4.
-		runs, err := bs.GetRecentRunsAllAgents(ctx, 0)
-		if err != nil {
-			t.Fatalf("GetRecentRunsAllAgents(0): %v", err)
-		}
-		if len(runs) != 4 {
-			t.Fatalf("expected 4 runs (default topN=4), got %d", len(runs))
-		}
-	})
-}
-
 // TestSaveRunWithAllVerdicts verifies all VerdictType values can be saved and retrieved.
 func TestSaveRunWithAllVerdicts(t *testing.T) {
 	ctx := context.Background()
@@ -655,5 +551,255 @@ func TestSaveRunWithAllVerdicts(t *testing.T) {
 	}
 	if len(runs) != len(verdicts) {
 		t.Errorf("expected %d runs, got %d", len(verdicts), len(runs))
+	}
+}
+
+// ─── Cycle pagination tests ───────────────────────────────────────────────────
+
+// TestListRunCyclesEmpty verifies ListRunCycles returns nil/empty for an empty store.
+func TestListRunCyclesEmpty(t *testing.T) {
+	ctx := context.Background()
+	bs := newTestBenchmarkStore(t)
+
+	cycles, err := bs.ListRunCycles(ctx, time.UTC, 0, 0)
+	if err != nil {
+		t.Fatalf("ListRunCycles on empty store: %v", err)
+	}
+	if len(cycles) != 0 {
+		t.Errorf("expected 0 cycles, got %d: %v", len(cycles), cycles)
+	}
+}
+
+// TestListRunCyclesSingleWeek verifies that multiple runs in the same week collapse to one cycle.
+func TestListRunCyclesSingleWeek(t *testing.T) {
+	ctx := context.Background()
+	bs := newTestBenchmarkStore(t)
+
+	// Sunday 2024-01-07 — pick a known Sunday in UTC.
+	sunday := time.Date(2024, 1, 7, 10, 0, 0, 0, time.UTC)
+	// Two runs on the same Sunday-week (Sun 7th and Wed 10th).
+	for _, offset := range []time.Duration{0, 72 * time.Hour} {
+		r := sampleRun("cycle-agent", store.VerdictKeep)
+		r.RunAt = sunday.Add(offset)
+		if err := bs.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun: %v", err)
+		}
+	}
+
+	cycles, err := bs.ListRunCycles(ctx, time.UTC, 0, 0)
+	if err != nil {
+		t.Fatalf("ListRunCycles: %v", err)
+	}
+	if len(cycles) != 1 {
+		t.Fatalf("expected 1 cycle (same week), got %d: %v", len(cycles), cycles)
+	}
+	// The cycle start should be Sunday 2024-01-07 00:00 UTC.
+	want := time.Date(2024, 1, 7, 0, 0, 0, 0, time.UTC)
+	if !cycles[0].Equal(want) {
+		t.Errorf("cycle start: got %v, want %v", cycles[0], want)
+	}
+}
+
+// TestListRunCyclesMultipleWeeks verifies that runs in different weeks yield distinct cycles, newest first.
+func TestListRunCyclesMultipleWeeks(t *testing.T) {
+	ctx := context.Background()
+	bs := newTestBenchmarkStore(t)
+
+	// Three runs each in a different ISO week (all Wednesdays, 1 week apart).
+	// Week starts: 2024-01-07 (Sun), 2024-01-14 (Sun), 2024-01-21 (Sun).
+	timestamps := []time.Time{
+		time.Date(2024, 1, 10, 12, 0, 0, 0, time.UTC), // Wed week-of-Jan-7
+		time.Date(2024, 1, 17, 12, 0, 0, 0, time.UTC), // Wed week-of-Jan-14
+		time.Date(2024, 1, 24, 12, 0, 0, 0, time.UTC), // Wed week-of-Jan-21
+	}
+	for i, ts := range timestamps {
+		r := sampleRun("multi-agent", store.VerdictKeep)
+		r.RunAt = ts
+		r.Accuracy = float64(i) * 0.1
+		if err := bs.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun[%d]: %v", i, err)
+		}
+	}
+
+	cycles, err := bs.ListRunCycles(ctx, time.UTC, 0, 0)
+	if err != nil {
+		t.Fatalf("ListRunCycles: %v", err)
+	}
+	if len(cycles) != 3 {
+		t.Fatalf("expected 3 cycles, got %d: %v", len(cycles), cycles)
+	}
+
+	// Newest first: Jan-21 week, then Jan-14 week, then Jan-7 week.
+	wantStarts := []time.Time{
+		time.Date(2024, 1, 21, 0, 0, 0, 0, time.UTC),
+		time.Date(2024, 1, 14, 0, 0, 0, 0, time.UTC),
+		time.Date(2024, 1, 7, 0, 0, 0, 0, time.UTC),
+	}
+	for i, want := range wantStarts {
+		if !cycles[i].Equal(want) {
+			t.Errorf("cycles[%d]: got %v, want %v", i, cycles[i], want)
+		}
+	}
+}
+
+// TestListRunCyclesOffsetAndLimit verifies ListRunCycles applies offset and limit correctly.
+func TestListRunCyclesOffsetAndLimit(t *testing.T) {
+	ctx := context.Background()
+	bs := newTestBenchmarkStore(t)
+
+	// Insert runs in 5 different weeks.
+	for i := 0; i < 5; i++ {
+		r := sampleRun("ol-agent", store.VerdictKeep)
+		// Use Sundays separated by one week each.
+		r.RunAt = time.Date(2024, 1, 7+i*7, 10, 0, 0, 0, time.UTC)
+		if err := bs.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun[%d]: %v", i, err)
+		}
+	}
+
+	// limit=2, offset=1 — skip the newest, return next 2.
+	cycles, err := bs.ListRunCycles(ctx, time.UTC, 2, 1)
+	if err != nil {
+		t.Fatalf("ListRunCycles: %v", err)
+	}
+	if len(cycles) != 2 {
+		t.Fatalf("expected 2 cycles with limit=2 offset=1, got %d", len(cycles))
+	}
+	// 5 Sundays newest-first: Jan-35(=Feb-4), Jan-28, Jan-21, Jan-14, Jan-7.
+	// offset=1 skips Feb-4; first result should be Jan-28.
+	wantFirst := time.Date(2024, 1, 28, 0, 0, 0, 0, time.UTC)
+	if !cycles[0].Equal(wantFirst) {
+		t.Errorf("cycles[0] after offset=1: got %v, want %v", cycles[0], wantFirst)
+	}
+}
+
+// TestQueryRunsInWindow verifies QueryRunsInWindow includes [since,until) correctly.
+func TestQueryRunsInWindow(t *testing.T) {
+	ctx := context.Background()
+	bs := newTestBenchmarkStore(t)
+
+	// Window: [2024-01-07, 2024-01-14)
+	since := time.Date(2024, 1, 7, 0, 0, 0, 0, time.UTC)
+	until := since.AddDate(0, 0, 7)
+
+	// Run inside the window.
+	inside := sampleRun("win-agent", store.VerdictKeep)
+	inside.RunAt = time.Date(2024, 1, 10, 12, 0, 0, 0, time.UTC)
+
+	// Run at the exact start boundary (inclusive).
+	atStart := sampleRun("win-agent", store.VerdictSwitch)
+	atStart.RunAt = since
+
+	// Run at exactly the end boundary (exclusive — must NOT appear).
+	atEnd := sampleRun("win-agent", store.VerdictUrgentSwitch)
+	atEnd.RunAt = until
+
+	// Run outside the window (before).
+	before := sampleRun("win-agent", store.VerdictKeep)
+	before.RunAt = time.Date(2024, 1, 5, 12, 0, 0, 0, time.UTC)
+
+	for _, r := range []store.BenchmarkRun{inside, atStart, atEnd, before} {
+		if err := bs.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun: %v", err)
+		}
+	}
+
+	runs, err := bs.QueryRunsInWindow(ctx, since, until)
+	if err != nil {
+		t.Fatalf("QueryRunsInWindow: %v", err)
+	}
+	// Should contain exactly 'inside' and 'atStart'; 'atEnd' and 'before' excluded.
+	if len(runs) != 2 {
+		t.Fatalf("expected 2 runs in window, got %d: %v", len(runs), runs)
+	}
+	for _, r := range runs {
+		if !r.RunAt.Before(until) {
+			t.Errorf("run at %v is not before until %v — exclusive upper bound violated", r.RunAt, until)
+		}
+		if r.RunAt.Before(since) {
+			t.Errorf("run at %v is before since %v — inclusive lower bound violated", r.RunAt, since)
+		}
+	}
+}
+
+// TestQueryRunsInWindowEmpty verifies QueryRunsInWindow returns empty when no runs fall in window.
+func TestQueryRunsInWindowEmpty(t *testing.T) {
+	ctx := context.Background()
+	bs := newTestBenchmarkStore(t)
+
+	since := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	until := since.AddDate(0, 0, 7)
+
+	// Insert a run outside the window.
+	r := sampleRun("empty-win", store.VerdictKeep)
+	r.RunAt = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := bs.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	runs, err := bs.QueryRunsInWindow(ctx, since, until)
+	if err != nil {
+		t.Fatalf("QueryRunsInWindow: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Errorf("expected 0 runs, got %d", len(runs))
+	}
+}
+
+// TestWeekStartInLoc verifies the week-start calculation for various weekdays.
+func TestWeekStartInLoc(t *testing.T) {
+	// We test via ListRunCycles with a single run placed on each weekday,
+	// verifying all collapse to the same Sunday week-start.
+
+	ctx := context.Background()
+
+	// Week containing 2024-01-07 (Sunday) through 2024-01-13 (Saturday).
+	expectedStart := time.Date(2024, 1, 7, 0, 0, 0, 0, time.UTC)
+
+	weekdays := []time.Time{
+		time.Date(2024, 1, 7, 8, 0, 0, 0, time.UTC),    // Sunday
+		time.Date(2024, 1, 8, 8, 0, 0, 0, time.UTC),    // Monday
+		time.Date(2024, 1, 10, 8, 0, 0, 0, time.UTC),   // Wednesday
+		time.Date(2024, 1, 13, 23, 59, 0, 0, time.UTC), // Saturday
+	}
+
+	for _, ts := range weekdays {
+		bs := newTestBenchmarkStore(t)
+		r := sampleRun("ws-agent", store.VerdictKeep)
+		r.RunAt = ts
+		if err := bs.SaveRun(ctx, r); err != nil {
+			t.Fatalf("SaveRun for %v: %v", ts, err)
+		}
+		cycles, err := bs.ListRunCycles(ctx, time.UTC, 0, 0)
+		if err != nil {
+			t.Fatalf("ListRunCycles for %v: %v", ts, err)
+		}
+		if len(cycles) != 1 {
+			t.Fatalf("expected 1 cycle for %v, got %d", ts, len(cycles))
+		}
+		if !cycles[0].Equal(expectedStart) {
+			t.Errorf("week-start for %v: got %v, want %v", ts, cycles[0], expectedStart)
+		}
+	}
+}
+
+// TestListRunCyclesNilLocDefaultsToLocal verifies that passing nil loc uses time.Local.
+func TestListRunCyclesNilLocDefaultsToLocal(t *testing.T) {
+	ctx := context.Background()
+	bs := newTestBenchmarkStore(t)
+
+	r := sampleRun("nil-loc", store.VerdictKeep)
+	r.RunAt = time.Now().UTC()
+	if err := bs.SaveRun(ctx, r); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+
+	// nil loc should not panic.
+	cycles, err := bs.ListRunCycles(ctx, nil, 0, 0)
+	if err != nil {
+		t.Fatalf("ListRunCycles with nil loc: %v", err)
+	}
+	if len(cycles) != 1 {
+		t.Errorf("expected 1 cycle, got %d", len(cycles))
 	}
 }

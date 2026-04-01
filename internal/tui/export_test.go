@@ -3,9 +3,25 @@
 package tui
 
 import (
+	"time"
+
 	"github.com/kiosvantra/metronous/internal/config"
 	"github.com/kiosvantra/metronous/internal/store"
 )
+
+// GetBenchmarkSummaryCursor returns the current cursor for summary tests.
+func GetBenchmarkSummaryCursor(m BenchmarkSummaryModel) int {
+	return m.cursor
+}
+
+// GetBenchmarkSummaryRows returns the rows loaded into the summary model.
+func GetBenchmarkSummaryRows(m BenchmarkSummaryModel) []summaryRow {
+	return m.rows
+}
+
+// SummaryRowForTest is the exported name for the internal summaryRow struct.
+// It allows tests to build synthetic BenchmarkSummaryDataMsg payloads.
+type SummaryRowForTest = summaryRow
 
 // TrackingSessionEventsMsg exports the internal trackingSessionEventsMsg for tests.
 type TrackingSessionEventsMsg = trackingSessionEventsMsg
@@ -21,12 +37,14 @@ func TrendDirection(verdicts []string) string {
 	return trendDirection(verdicts)
 }
 
-// BenchmarkPageSize exposes maxBenchmarkRows for pagination tests.
-const BenchmarkPageSize = maxBenchmarkRows
+// GetBenchmarkCycleIndex returns the current cycleIndex for tests.
+func GetBenchmarkCycleIndex(m BenchmarkModel) int {
+	return m.cycleIndex
+}
 
-// GetBenchmarkPageOffset returns the current pageOffset for tests.
-func GetBenchmarkPageOffset(m BenchmarkModel) int {
-	return m.pageOffset
+// GetBenchmarkCycles returns the list of cycle week-starts for tests.
+func GetBenchmarkCycles(m BenchmarkModel) []time.Time {
+	return m.cycles
 }
 
 // GetBenchmarkCursor returns the current cursor for tests.

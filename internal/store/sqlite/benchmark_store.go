@@ -428,38 +428,79 @@ func scanBenchmarkRun(row rowScanner) (*store.BenchmarkRun, error) {
 	return &run, nil
 }
 
-// GetRecentRunsAllAgents returns at most topNPerAgent most recent benchmark runs per distinct
-// agent_id, using a ROW_NUMBER() window function CTE for a single-query implementation.
-// If topNPerAgent <= 0, it defaults to 4.
-// Results are ordered by agent_id ASC, run_at DESC within each agent.
-func (bs *BenchmarkStore) GetRecentRunsAllAgents(ctx context.Context, topNPerAgent int) ([]store.BenchmarkRun, error) {
-	if topNPerAgent <= 0 {
-		topNPerAgent = 4
+// ListRunCycles returns the distinct week-start timestamps (Sunday 00:00 in loc, stored as UTC)
+// for all benchmark runs, ordered newest first.
+// limit=0 returns all; offset skips the first N cycle rows.
+func (bs *BenchmarkStore) ListRunCycles(ctx context.Context, loc *time.Location, limit, offset int) ([]time.Time, error) {
+	if loc == nil {
+		loc = time.Local
 	}
 
-	const q = `
-		WITH ranked AS (
-			SELECT id, run_at, window_days, agent_id, model,
-				accuracy, avg_latency_ms, p50_latency_ms, p95_latency_ms, p99_latency_ms,
-				tool_success_rate, roi_score, total_cost_usd, sample_size,
-				verdict, recommended_model, decision_reason, artifact_path, avg_quality_score,
-				ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY run_at DESC) AS rn
-			FROM benchmark_runs
-		)
-		SELECT id, run_at, window_days, agent_id, model,
-			accuracy, avg_latency_ms, p50_latency_ms, p95_latency_ms, p99_latency_ms,
-			tool_success_rate, roi_score, total_cost_usd, sample_size,
-			verdict, recommended_model, decision_reason, artifact_path, avg_quality_score
-		FROM ranked
-		WHERE rn <= ?
-		ORDER BY agent_id ASC, run_at DESC`
-
-	rows, err := bs.readDB.QueryContext(ctx, q, topNPerAgent)
+	// Pull all distinct run_at values (milliseconds UTC).
+	// We compute week-start grouping in Go so we can use the caller's local timezone
+	// (SQLite has no timezone support, and strftime('%w') is UTC-only).
+	const q = `SELECT DISTINCT run_at FROM benchmark_runs ORDER BY run_at DESC`
+	rows, err := bs.readDB.QueryContext(ctx, q)
 	if err != nil {
-		return nil, fmt.Errorf("get recent runs all agents: %w", err)
+		return nil, fmt.Errorf("list run_at for cycles: %w", err)
 	}
 	defer rows.Close()
 
+	// Collect unique week-start times in loc.
+	seen := make(map[time.Time]struct{})
+	var ordered []time.Time // insertion order = newest first (since query is DESC)
+	for rows.Next() {
+		var ms int64
+		if err := rows.Scan(&ms); err != nil {
+			return nil, fmt.Errorf("scan run_at: %w", err)
+		}
+		t := time.UnixMilli(ms).In(loc)
+		ws := weekStartInLoc(t)
+		if _, ok := seen[ws]; !ok {
+			seen[ws] = struct{}{}
+			ordered = append(ordered, ws)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate run_at rows: %w", err)
+	}
+
+	// Apply offset and limit.
+	if offset >= len(ordered) {
+		return nil, nil
+	}
+	ordered = ordered[offset:]
+	if limit > 0 && limit < len(ordered) {
+		ordered = ordered[:limit]
+	}
+	return ordered, nil
+}
+
+// weekStartInLoc returns midnight Sunday of the week containing t, in the same location as t.
+// Sunday is weekday 0 in Go's time.Weekday().
+func weekStartInLoc(t time.Time) time.Time {
+	// Shift back to Sunday.
+	daysBack := int(t.Weekday()) // Sunday=0, Monday=1, … Saturday=6
+	d := t.AddDate(0, 0, -daysBack)
+	return time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, d.Location())
+}
+
+// QueryRunsInWindow returns all benchmark runs whose run_at falls within [since, until),
+// ordered by run_at DESC.
+func (bs *BenchmarkStore) QueryRunsInWindow(ctx context.Context, since, until time.Time) ([]store.BenchmarkRun, error) {
+	const q = `SELECT id, run_at, window_days, agent_id, model,
+		accuracy, avg_latency_ms, p50_latency_ms, p95_latency_ms, p99_latency_ms,
+		tool_success_rate, roi_score, total_cost_usd, sample_size,
+		verdict, recommended_model, decision_reason, artifact_path, avg_quality_score
+		FROM benchmark_runs
+		WHERE run_at >= ? AND run_at < ?
+		ORDER BY run_at DESC`
+
+	rows, err := bs.readDB.QueryContext(ctx, q, since.UTC().UnixMilli(), until.UTC().UnixMilli())
+	if err != nil {
+		return nil, fmt.Errorf("query runs in window: %w", err)
+	}
+	defer rows.Close()
 	return scanBenchmarkRuns(rows)
 }
 
