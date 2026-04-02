@@ -75,7 +75,7 @@ func (m mockChartsBenchmarkStore) QueryRunsInWindow(context.Context, time.Time, 
 func (m mockChartsBenchmarkStore) Close() error { return nil }
 
 func TestChartsFetchRanksMonthlyCards(t *testing.T) {
-	monthStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.Local)
+	monthStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	es := mockChartsEventStore{rows: []store.DailyCostByModelRow{
 		{Day: monthStart, Model: "alpha", TotalCostUSD: 10},
 		{Day: monthStart, Model: "beta", TotalCostUSD: 8},
@@ -118,7 +118,7 @@ func TestChartsFetchRanksMonthlyCards(t *testing.T) {
 }
 
 func TestChartsMonthCursorDoesNotChangeWithModeToggleKey(t *testing.T) {
-	monthStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.Local)
+	monthStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	m := NewChartsModel(nil, nil)
 	m.monthStart = monthStart
 	originalCursor := m.cursorDayIndex
@@ -136,7 +136,7 @@ func TestChartsMonthCursorDoesNotChangeWithModeToggleKey(t *testing.T) {
 }
 
 func TestChartsMouseCursorSelectsExpectedDay(t *testing.T) {
-	monthStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.Local) // 30 days
+	monthStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC) // 30 days
 	m := NewChartsModel(nil, nil)
 	m.monthStart = monthStart
 	m.width = 160

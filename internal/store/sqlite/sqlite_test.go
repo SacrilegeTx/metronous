@@ -664,9 +664,10 @@ func TestGetAgentSummaryIgnoresNonCompleteCosts(t *testing.T) {
 	assertFloatClose(t, summary.TotalCostUSD, finalCost)
 }
 
-func TestQueryDailyCostByModelBucketsLocalTime(t *testing.T) {
-	// Validate that QueryDailyCostByModel buckets by SQLite localtime
-	// (and that the caller passes local month boundaries as UTC instants).
+func TestQueryDailyCostByModelBucketsUTC(t *testing.T) {
+	// Day buckets are computed in UTC; this test validates that the day
+	// derived from an event's UTC timestamp matches expectations when the
+	// caller provides UTC month boundaries.
 	withLocalTimezone(t, "Etc/GMT+5", func(loc *time.Location) {
 		es := newTestStore(t)
 		ctx := context.Background()
@@ -675,13 +676,13 @@ func TestQueryDailyCostByModelBucketsLocalTime(t *testing.T) {
 		costDec31 := 1.23
 		costJan1 := 2.34
 
-		// Local month: 2026-01-01 00:00 in UTC-5.
+		// Local month boundaries (converted to UTC for the query window).
 		monthStartLocal := time.Date(2026, 1, 1, 0, 0, 0, 0, loc)
 		monthEndLocal := monthStartLocal.AddDate(0, 1, 0)
 
 		// UTC timestamps:
-		// - 2026-01-01 04:00 UTC == 2025-12-31 23:00 local (should be excluded)
-		// - 2026-01-01 06:00 UTC == 2026-01-01 01:00 local (should be included)
+		// - 2026-01-01 04:00 UTC should be excluded by the provided window.
+		// - 2026-01-01 06:00 UTC should be included.
 		evDec31 := store.Event{
 			AgentID:   "agent",
 			SessionID: "s1",
@@ -721,14 +722,14 @@ func TestQueryDailyCostByModelBucketsLocalTime(t *testing.T) {
 	})
 }
 
-func TestQueryDailyCostByModelUsesLocaltimeForReturnedDayBucket(t *testing.T) {
-	withLocalTimezone(t, "Etc/GMT+5", func(loc *time.Location) {
+func TestQueryDailyCostByModelUsesUTCDayBucketForReturnedDayBucket(t *testing.T) {
+	withLocalTimezone(t, "Etc/GMT+5", func(_ *time.Location) {
 		es := newTestStore(t)
 		ctx := context.Background()
 
 		cost := 0.75
-		// 2026-01-02 04:30 UTC == 2026-01-01 23:30 local, so the returned day bucket
-		// must be 2026-01-01 even though the UTC date is 2026-01-02.
+		// Bucketing is UTC-based, so 2026-01-02 04:30 UTC must return day
+		// bucket 2026-01-02.
 		ts := time.Date(2026, 1, 2, 4, 30, 0, 0, time.UTC)
 		event := store.Event{
 			AgentID:   "agent",
@@ -742,17 +743,17 @@ func TestQueryDailyCostByModelUsesLocaltimeForReturnedDayBucket(t *testing.T) {
 			t.Fatalf("InsertEvent: %v", err)
 		}
 
-		windowStartLocal := time.Date(2026, 1, 1, 0, 0, 0, 0, loc)
-		windowEndLocal := windowStartLocal.AddDate(0, 0, 2)
-		rows, err := es.QueryDailyCostByModel(ctx, windowStartLocal.UTC(), windowEndLocal.UTC())
+		windowStartUTC := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		windowEndUTC := windowStartUTC.AddDate(0, 0, 2)
+		rows, err := es.QueryDailyCostByModel(ctx, windowStartUTC, windowEndUTC)
 		if err != nil {
 			t.Fatalf("QueryDailyCostByModel: %v", err)
 		}
 		if len(rows) != 1 {
 			t.Fatalf("expected 1 row, got %d: %+v", len(rows), rows)
 		}
-		if rows[0].Day.Format("2006-01-02") != "2026-01-01" {
-			t.Fatalf("expected local bucket 2026-01-01, got %s", rows[0].Day.Format("2006-01-02"))
+		if rows[0].Day.Format("2006-01-02") != "2026-01-02" {
+			t.Fatalf("expected UTC bucket 2026-01-02, got %s", rows[0].Day.Format("2006-01-02"))
 		}
 		assertFloatClose(t, rows[0].TotalCostUSD, cost)
 	})

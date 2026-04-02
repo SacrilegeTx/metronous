@@ -1027,7 +1027,7 @@ func (m *ChartsModel) handleMouse(msg tea.MouseMsg) {
 // NewChartsModel creates a ChartsModel wired to the given EventStore.
 func NewChartsModel(es store.EventStore, bs store.BenchmarkStore) ChartsModel {
 	now := time.Now()
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 	return ChartsModel{
 		es:             es,
 		bs:             bs,
