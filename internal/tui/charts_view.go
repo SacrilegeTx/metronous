@@ -18,27 +18,10 @@ const chartsRefreshInterval = 2 * time.Second
 
 type chartsTickMsg struct{ t time.Time }
 
-// ChartMode controls how the selected top 3 models are chosen.
-type ChartMode int
-
-const (
-	ChartModePerformance ChartMode = iota
-	ChartModeResponsibility
-)
-
-func (m ChartMode) String() string {
-	switch m {
-	case ChartModeResponsibility:
-		return "Responsibility"
-	default:
-		return "Performance"
-	}
-}
-
 type ChartsDataMsg struct {
-	Mode                         ChartMode
 	MonthStart                   time.Time
 	Rows                         []store.DailyCostByModelRow
+	ModelStats                   map[string]*chartModelStats
 	SelectedModels               []string
 	CostSelectedModels           []string
 	PerformanceSelectedModels    []string
@@ -55,7 +38,6 @@ type ChartsModel struct {
 	height int
 
 	monthStart time.Time // local midnight of the 1st day of selected month
-	mode       ChartMode
 
 	loading bool
 	err     error
@@ -66,6 +48,7 @@ type ChartsModel struct {
 
 	performanceSelectedModels    []string
 	responsibilitySelectedModels []string
+	modelStats                   map[string]*chartModelStats
 
 	cursorDayIndex int // 0-based within the selected month
 }
@@ -174,6 +157,29 @@ type chartPanelData struct {
 	totals         map[string]float64
 }
 
+type chartSummaryEntry struct {
+	Model               string
+	Color               lipgloss.Color
+	HealthScore         float64
+	ResponsibilityScore float64
+	TotalCostUSD        float64
+}
+
+type chartModelStats struct {
+	Model               string
+	Runs                int
+	TotalSamples        int
+	SumAccuracy         float64
+	SumP95              float64
+	LastVerdict         store.VerdictType
+	LastRunAt           time.Time
+	HealthScore         float64
+	ResponsibilityScore float64
+	TotalCostUSD        float64
+	roleWeightSum       float64
+	roleWeightedScore   float64
+}
+
 func buildChartPanelData(rows []store.DailyCostByModelRow, selected []string) chartPanelData {
 	data := chartPanelData{
 		selectedModels: selected,
@@ -186,7 +192,17 @@ func buildChartPanelData(rows []store.DailyCostByModelRow, selected []string) ch
 		return data
 	}
 
-	palette := []lipgloss.Color{lipgloss.Color("82"), lipgloss.Color("226"), lipgloss.Color("196")}
+	palette := []lipgloss.Color{
+		lipgloss.Color("82"),
+		lipgloss.Color("226"),
+		lipgloss.Color("196"),
+		lipgloss.Color("39"),
+		lipgloss.Color("213"),
+		lipgloss.Color("51"),
+		lipgloss.Color("99"),
+		lipgloss.Color("208"),
+		lipgloss.Color("141"),
+	}
 	selectedSet := make(map[string]struct{}, len(selected))
 	for _, model := range selected {
 		selectedSet[model] = struct{}{}
@@ -213,6 +229,286 @@ func buildChartPanelData(rows []store.DailyCostByModelRow, selected []string) ch
 	}
 
 	return data
+}
+
+func buildChartColorMap(models []string) map[string]lipgloss.Color {
+	palette := []lipgloss.Color{
+		lipgloss.Color("82"),
+		lipgloss.Color("226"),
+		lipgloss.Color("196"),
+		lipgloss.Color("39"),
+		lipgloss.Color("213"),
+		lipgloss.Color("51"),
+		lipgloss.Color("99"),
+		lipgloss.Color("208"),
+		lipgloss.Color("141"),
+	}
+	colors := make(map[string]lipgloss.Color, len(models))
+	for i, model := range models {
+		if _, ok := colors[model]; ok {
+			continue
+		}
+		colors[model] = palette[i%len(palette)]
+	}
+	return colors
+}
+
+func responsibilityWeightForAgent(agentID string) float64 {
+	switch agentID {
+	case "sdd-orchestrator":
+		return 1.00
+	case "sdd-apply":
+		return 0.98
+	case "sdd-verify":
+		return 0.96
+	case "sdd-explore":
+		return 0.94
+	case "sdd-design":
+		return 0.92
+	case "sdd-spec":
+		return 0.90
+	case "sdd-propose":
+		return 0.88
+	case "sdd-tasks":
+		return 0.87
+	case "sdd-init":
+		return 0.85
+	case "sdd-archive":
+		return 0.86
+	default:
+		if strings.HasPrefix(agentID, "sdd-") {
+			return 0.90
+		}
+		if agentID == "build" || agentID == "plan" || agentID == "general" || agentID == "explore" {
+			return 0.80
+		}
+		return 0.75
+	}
+}
+
+func aggregateChartsModelStats(runs []store.BenchmarkRun) map[string]*chartModelStats {
+	stats := make(map[string]*chartModelStats)
+	for _, run := range runs {
+		if run.Model == "" || run.RunAt.IsZero() {
+			continue
+		}
+		s := stats[run.Model]
+		if s == nil {
+			s = &chartModelStats{Model: run.Model}
+			stats[run.Model] = s
+		}
+
+		s.Runs++
+		isInsufficient := run.Verdict == store.VerdictInsufficientData || run.SampleSize < 50
+		if !isInsufficient {
+			samples := run.SampleSize
+			if samples <= 0 {
+				samples = 1
+			}
+			s.TotalSamples += samples
+			s.SumAccuracy += run.Accuracy * float64(samples)
+			s.SumP95 += run.P95LatencyMs * float64(samples)
+		}
+
+		if run.RunAt.After(s.LastRunAt) {
+			if !isInsufficient {
+				s.LastRunAt = run.RunAt
+				s.LastVerdict = run.Verdict
+			} else if s.LastVerdict == "" || s.LastVerdict == store.VerdictInsufficientData {
+				s.LastRunAt = run.RunAt
+				s.LastVerdict = run.Verdict
+			}
+		}
+
+		weight := responsibilityWeightForAgent(run.AgentID)
+		if run.SampleSize <= 0 {
+			run.SampleSize = 1
+		}
+		s.roleWeightSum += float64(run.SampleSize)
+		weightedScore := computeHealthScore(run.Accuracy, run.P95LatencyMs, run.Verdict) * weight
+		s.roleWeightedScore += weightedScore * float64(run.SampleSize)
+	}
+
+	for _, s := range stats {
+		if s.TotalSamples > 0 {
+			avgAcc := s.SumAccuracy / float64(s.TotalSamples)
+			avgP95 := s.SumP95 / float64(s.TotalSamples)
+			s.HealthScore = computeHealthScore(avgAcc, avgP95, s.LastVerdict)
+		} else {
+			s.HealthScore = computeHealthScore(0, 0, s.LastVerdict)
+		}
+		if s.roleWeightSum > 0 {
+			s.ResponsibilityScore = s.roleWeightedScore / s.roleWeightSum
+		} else {
+			s.ResponsibilityScore = s.HealthScore * 0.75
+		}
+	}
+
+	return stats
+}
+
+func rankChartsByScore(stats map[string]*chartModelStats, scoreFn func(*chartModelStats) float64, limit int) []string {
+	type item struct {
+		model string
+		score float64
+		cost  float64
+	}
+	items := make([]item, 0, len(stats))
+	for _, s := range stats {
+		items = append(items, item{model: s.Model, score: scoreFn(s), cost: s.TotalCostUSD})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].score != items[j].score {
+			return items[i].score > items[j].score
+		}
+		if items[i].cost != items[j].cost {
+			return items[i].cost > items[j].cost
+		}
+		return items[i].model < items[j].model
+	})
+	if limit <= 0 || limit > len(items) {
+		limit = len(items)
+	}
+	out := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		out = append(out, items[i].model)
+	}
+	return out
+}
+
+func buildChartSummaryEntries(modelOrder []string, stats map[string]*chartModelStats, totals map[string]float64) []chartSummaryEntry {
+	colors := buildChartColorMap(modelOrder)
+	entries := make([]chartSummaryEntry, 0, len(modelOrder))
+	for _, model := range modelOrder {
+		s := stats[model]
+		if s == nil {
+			s = &chartModelStats{Model: model}
+		}
+		entries = append(entries, chartSummaryEntry{
+			Model:               model,
+			Color:               colors[model],
+			HealthScore:         s.HealthScore,
+			ResponsibilityScore: s.ResponsibilityScore,
+			TotalCostUSD:        totals[model],
+		})
+	}
+	return entries
+}
+
+func chartScoreBar(value, maxValue float64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if maxValue <= 0 {
+		return strings.Repeat("·", width)
+	}
+	filled := int(math.Round((value / maxValue) * float64(width)))
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > width {
+		filled = width
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("·", width-filled)
+}
+
+func truncateSummaryText(s string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= maxWidth {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= maxWidth {
+		return s
+	}
+	if maxWidth == 1 {
+		return "…"
+	}
+	return string(runes[:maxWidth-1]) + "…"
+}
+
+func renderSummaryCard(title string, entries []chartSummaryEntry, width int, showResponsibility bool) string {
+	if width <= 0 {
+		width = 40
+	}
+	innerWidth := width - 4
+	if innerWidth < 24 {
+		innerWidth = 24
+	}
+	borderStyle := lipgloss.NewStyle().
+		Width(width).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(0, 1)
+
+	headline := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(title)
+	lines := []string{headline}
+	if len(entries) == 0 {
+		lines = append(lines, "No benchmark data for the selected month.")
+		return borderStyle.Render(strings.Join(lines, "\n"))
+	}
+
+	maxCost := 0.0
+	for _, entry := range entries {
+		if entry.TotalCostUSD > maxCost {
+			maxCost = entry.TotalCostUSD
+		}
+	}
+
+	for i, entry := range entries {
+		rank := fmt.Sprintf("%d.", i+1)
+		bullet := lipgloss.NewStyle().Foreground(entry.Color).Render("█")
+		modelWidth := innerWidth - 34
+		if showResponsibility {
+			modelWidth = innerWidth - 38
+		}
+		if modelWidth < 10 {
+			modelWidth = 10
+		}
+		model := truncateSummaryText(entry.Model, modelWidth)
+		cost := fmt.Sprintf("$%.2f", entry.TotalCostUSD)
+		barWidth := 8
+		if innerWidth > 56 {
+			barWidth = 10
+		}
+		bar := lipgloss.NewStyle().Foreground(entry.Color).Render(chartScoreBar(entry.TotalCostUSD, maxCost, barWidth))
+
+		var score string
+		if showResponsibility {
+			score = fmt.Sprintf("R %.0f | H %.0f", entry.ResponsibilityScore, entry.HealthScore)
+		} else {
+			score = fmt.Sprintf("H %.0f", entry.HealthScore)
+		}
+
+		line := fmt.Sprintf("%s %s %s  %s  %s %s", rank, bullet, model, score, cost, bar)
+		lines = append(lines, line)
+	}
+
+	return borderStyle.Render(strings.Join(lines, "\n"))
+}
+
+func renderSummaryCards(width int, performance, responsibility []chartSummaryEntry) []string {
+	if width <= 0 {
+		width = 80
+	}
+	const gap = 4
+	minCardWidth := 34
+	if width < minCardWidth*2+gap {
+		left := renderSummaryCard("Performance Top 3", performance, width, false)
+		right := renderSummaryCard("Responsibility Top 3", responsibility, width, true)
+		return []string{left, "", right}
+	}
+	cardWidth := (width - gap) / 2
+	if cardWidth < minCardWidth {
+		left := renderSummaryCard("Performance Top 3", performance, width, false)
+		right := renderSummaryCard("Responsibility Top 3", responsibility, width, true)
+		return []string{left, "", right}
+	}
+	left := renderSummaryCard("Performance Top 3", performance, cardWidth, false)
+	right := renderSummaryCard("Responsibility Top 3", responsibility, cardWidth, true)
+	return strings.Split(lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), right), "\n")
 }
 
 func wrapLegendLines(selected []string, totals map[string]float64, colors map[string]lipgloss.Color, width int) []string {
@@ -568,7 +864,6 @@ func NewChartsModel(es store.EventStore, bs store.BenchmarkStore) ChartsModel {
 		es:             es,
 		bs:             bs,
 		monthStart:     monthStart,
-		mode:           ChartModePerformance,
 		loading:        true,
 		cursorDayIndex: 0,
 	}
@@ -607,6 +902,7 @@ func (m ChartsModel) Update(msg tea.Msg) (ChartsModel, tea.Cmd) {
 		m.err = msg.Err
 		if msg.Err == nil {
 			m.dailyRows = msg.Rows
+			m.modelStats = msg.ModelStats
 			if len(msg.CostSelectedModels) > 0 {
 				m.selectedModels = msg.CostSelectedModels
 			} else {
@@ -682,23 +978,26 @@ func (m ChartsModel) fetchChartData() tea.Cmd {
 		costSelected := rankModelsByCost(rows, 3)
 		performanceSelected := costSelected
 		responsibilitySelected := costSelected
+		stats := map[string]*chartModelStats{}
 		if bs != nil {
-			active := make(map[string]struct{})
-			for _, r := range rows {
-				active[r.Model] = struct{}{}
-			}
-			summaries, err := bs.QueryModelSummaries(ctx)
+			runs, err := bs.QueryRunsInWindow(ctx, startLocal.UTC(), endLocal.UTC())
 			if err != nil {
 				return ChartsDataMsg{MonthStart: monthStart, Err: err}
 			}
-			performanceSelected = rankModelsByPerformance(summaries, active, 3)
+			stats = aggregateChartsModelStats(runs)
+			performanceSelected = rankChartsByScore(stats, func(s *chartModelStats) float64 { return s.HealthScore }, 3)
+			responsibilitySelected = rankChartsByScore(stats, func(s *chartModelStats) float64 { return s.ResponsibilityScore }, 3)
 			if len(performanceSelected) == 0 {
 				performanceSelected = costSelected
+			}
+			if len(responsibilitySelected) == 0 {
+				responsibilitySelected = costSelected
 			}
 		}
 		return ChartsDataMsg{
 			MonthStart:                   monthStart,
 			Rows:                         rows,
+			ModelStats:                   stats,
 			SelectedModels:               costSelected,
 			CostSelectedModels:           costSelected,
 			PerformanceSelectedModels:    performanceSelected,
@@ -710,7 +1009,7 @@ func (m ChartsModel) fetchChartData() tea.Cmd {
 
 func (m ChartsModel) View() string {
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render("Charts")
-	sub := fmt.Sprintf("Daily stacked cost charts for the top 3 models — %s  (←/→ month, k/l day)", m.monthStart.Format("January 2006"))
+	sub := fmt.Sprintf("Monthly cost chart plus benchmark summary cards — %s  (←/→ month, k/l or mouse only affect the cost chart)", m.monthStart.Format("January 2006"))
 
 	lines := []string{title + "\n" + sub}
 	if m.loading {
@@ -727,35 +1026,34 @@ func (m ChartsModel) View() string {
 		days = append(days, d)
 	}
 
-	if len(m.dailyRows) == 0 {
-		lines = append(lines, "No chart data for the selected month.")
-		return strings.Join(lines, "\n")
-	}
-
 	costPanel := buildChartPanelData(m.dailyRows, m.selectedModels)
-	performancePanel := buildChartPanelData(m.dailyRows, m.performanceSelectedModels)
-	responsibilityPanel := buildChartPanelData(m.dailyRows, m.responsibilitySelectedModels)
-
-	panels := []struct {
-		title string
-		data  chartPanelData
-	}{
-		{title: "Cost top-3 (spenders)", data: costPanel},
-		{title: "Performance top-3", data: performancePanel},
-		{title: "Responsibility top-3", data: responsibilityPanel},
-	}
-
-	for i, panel := range panels {
-		if i > 0 {
+	lines = append(lines, "")
+	if len(m.dailyRows) == 0 || len(m.selectedModels) == 0 {
+		lines = append(lines, "No cost data for the selected month.")
+	} else {
+		lines = append(lines, renderChartPanel("Cost chart", days, m.cursorDayIndex, m.width, m.height, costPanel)...)
+		tooltipLines := renderChartTooltip(days, m.cursorDayIndex, costPanel)
+		if len(tooltipLines) > 0 {
 			lines = append(lines, "")
+			lines = append(lines, tooltipLines...)
 		}
-		lines = append(lines, renderChartPanel(panel.title, days, m.cursorDayIndex, m.width, m.height, panel.data)...)
 	}
 
-	tooltipLines := renderChartTooltip(days, m.cursorDayIndex, costPanel)
-	if len(tooltipLines) > 0 {
+	stats := m.modelStats
+	if stats == nil {
+		stats = map[string]*chartModelStats{}
+	}
+	performanceEntries := buildChartSummaryEntries(m.performanceSelectedModels, stats, costPanel.totals)
+	responsibilityEntries := buildChartSummaryEntries(m.responsibilitySelectedModels, stats, costPanel.totals)
+	if len(performanceEntries) == 0 && len(responsibilityEntries) == 0 {
+		performanceEntries = buildChartSummaryEntries(m.selectedModels, stats, costPanel.totals)
+		responsibilityEntries = performanceEntries
+	}
+
+	cardLines := renderSummaryCards(m.width, performanceEntries, responsibilityEntries)
+	if len(cardLines) > 0 {
 		lines = append(lines, "")
-		lines = append(lines, tooltipLines...)
+		lines = append(lines, cardLines...)
 	}
 
 	return strings.Join(lines, "\n")

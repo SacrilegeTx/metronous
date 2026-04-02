@@ -3,9 +3,11 @@ package tui
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/kiosvantra/metronous/internal/store"
 )
 
@@ -41,6 +43,7 @@ func (m mockChartsEventStore) Close() error { return nil }
 
 type mockChartsBenchmarkStore struct {
 	summaries []store.BenchmarkModelSummary
+	runs      []store.BenchmarkRun
 }
 
 func (m mockChartsBenchmarkStore) SaveRun(context.Context, store.BenchmarkRun) error { return nil }
@@ -67,21 +70,23 @@ func (m mockChartsBenchmarkStore) QueryModelSummaries(context.Context) ([]store.
 	return m.summaries, nil
 }
 func (m mockChartsBenchmarkStore) QueryRunsInWindow(context.Context, time.Time, time.Time) ([]store.BenchmarkRun, error) {
-	return nil, nil
+	return m.runs, nil
 }
 func (m mockChartsBenchmarkStore) Close() error { return nil }
 
-func TestChartsFetchRanksPerformanceByHealthScore(t *testing.T) {
+func TestChartsFetchRanksMonthlyCards(t *testing.T) {
 	monthStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.Local)
 	es := mockChartsEventStore{rows: []store.DailyCostByModelRow{
 		{Day: monthStart, Model: "alpha", TotalCostUSD: 10},
-		{Day: monthStart, Model: "beta", TotalCostUSD: 5},
-		{Day: monthStart, Model: "gamma", TotalCostUSD: 3},
+		{Day: monthStart, Model: "beta", TotalCostUSD: 8},
+		{Day: monthStart, Model: "gamma", TotalCostUSD: 6},
+		{Day: monthStart, Model: "delta", TotalCostUSD: 4},
 	}}
-	bs := mockChartsBenchmarkStore{summaries: []store.BenchmarkModelSummary{
-		{Model: "alpha", AvgAccuracy: 0.20, AvgP95Ms: 9000, LastVerdict: store.VerdictUrgentSwitch, TotalCostUSD: 10},
-		{Model: "beta", AvgAccuracy: 0.95, AvgP95Ms: 150, LastVerdict: store.VerdictKeep, TotalCostUSD: 5},
-		{Model: "gamma", AvgAccuracy: 0.80, AvgP95Ms: 1000, LastVerdict: store.VerdictSwitch, TotalCostUSD: 3},
+	bs := mockChartsBenchmarkStore{runs: []store.BenchmarkRun{
+		{AgentID: "build", Model: "alpha", RunAt: monthStart.AddDate(0, 0, 1), SampleSize: 100, Accuracy: 0.94, P95LatencyMs: 100, Verdict: store.VerdictKeep},
+		{AgentID: "sdd-orchestrator", Model: "beta", RunAt: monthStart.AddDate(0, 0, 2), SampleSize: 100, Accuracy: 0.92, P95LatencyMs: 200, Verdict: store.VerdictKeep},
+		{AgentID: "sdd-explore", Model: "gamma", RunAt: monthStart.AddDate(0, 0, 3), SampleSize: 100, Accuracy: 0.88, P95LatencyMs: 500, Verdict: store.VerdictSwitch},
+		{AgentID: "sdd-init", Model: "delta", RunAt: monthStart.AddDate(0, 0, 4), SampleSize: 100, Accuracy: 0.80, P95LatencyMs: 1000, Verdict: store.VerdictUrgentSwitch},
 	}}
 
 	m := NewChartsModel(es, bs)
@@ -92,13 +97,40 @@ func TestChartsFetchRanksPerformanceByHealthScore(t *testing.T) {
 		t.Fatalf("expected ChartsDataMsg, got %T", msg)
 	}
 
-	if got, want := data.PerformanceSelectedModels, []string{"beta", "gamma", "alpha"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unexpected performance ranking: got %v want %v", got, want)
-	}
 	if got, want := data.CostSelectedModels, []string{"alpha", "beta", "gamma"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected cost ranking: got %v want %v", got, want)
 	}
-	if got, want := data.ResponsibilitySelectedModels, []string{"alpha", "beta", "gamma"}; !reflect.DeepEqual(got, want) {
+	if got, want := data.PerformanceSelectedModels, []string{"alpha", "beta", "gamma"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected performance ranking: got %v want %v", got, want)
+	}
+	if got, want := data.ResponsibilitySelectedModels, []string{"beta", "gamma", "alpha"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected responsibility ranking: got %v want %v", got, want)
+	}
+
+	m, _ = m.Update(data)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 160, Height: 60})
+	view := m.View()
+	for _, want := range []string{"Cost chart", "Performance Top 3", "Responsibility Top 3"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected %q in view, got %q", want, view)
+		}
+	}
+}
+
+func TestChartsMonthCursorDoesNotChangeWithModeToggleKey(t *testing.T) {
+	monthStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.Local)
+	m := NewChartsModel(nil, nil)
+	m.monthStart = monthStart
+	originalCursor := m.cursorDayIndex
+	originalMonth := m.monthStart
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	m = updated
+
+	if m.cursorDayIndex != originalCursor {
+		t.Fatalf("expected cursor to stay at %d, got %d", originalCursor, m.cursorDayIndex)
+	}
+	if m.monthStart.Year() != originalMonth.Year() || m.monthStart.Month() != originalMonth.Month() {
+		t.Fatalf("expected month to stay unchanged after pressing m")
 	}
 }

@@ -153,11 +153,6 @@ func GetBenchmarkRunErr(m BenchmarkModel) error {
 	return m.runErr
 }
 
-// GetChartsMode returns the current chart mode for tests.
-func GetChartsMode(m ChartsModel) ChartMode {
-	return m.mode
-}
-
 // GetChartsMonthStart returns the active month for tests.
 func GetChartsMonthStart(m ChartsModel) time.Time {
 	return m.monthStart

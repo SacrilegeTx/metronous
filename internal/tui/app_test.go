@@ -1286,8 +1286,8 @@ func TestBenchmarkSummaryViewRendersAgentRows(t *testing.T) {
 	}
 }
 
-// TestChartsPanelsAndNavigation verifies the Charts tab renders all panels and
-// keeps month/day navigation working.
+// TestChartsPanelsAndNavigation verifies the Charts tab renders the cost chart
+// plus summary cards and keeps month/day navigation working.
 func TestChartsPanelsAndNavigation(t *testing.T) {
 	monthStart := time.Date(time.Now().Year(), time.Now().Month(), 1, 0, 0, 0, 0, time.Local)
 	m := tui.NewChartsModel(nil, nil)
@@ -1329,13 +1329,15 @@ func TestChartsPanelsAndNavigation(t *testing.T) {
 	}
 
 	view := m.View()
-	if !strings.Contains(view, "Cost top-3 (spenders)") || !strings.Contains(view, "Performance top-3") || !strings.Contains(view, "Responsibility top-3") {
-		t.Fatalf("expected all three panel titles in view, got: %q", view)
+	for _, want := range []string{"Cost chart", "Performance Top 3", "Responsibility Top 3"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected %q in view, got: %q", want, view)
+		}
 	}
 }
 
 // TestChartsViewRendersTooltipBreakdown verifies the chart view includes the
-// selected mode label and the selected day breakdown.
+// selected day breakdown while leaving the summary cards in place.
 func TestChartsViewRendersTooltipBreakdown(t *testing.T) {
 	monthStart := time.Date(time.Now().Year(), time.Now().Month(), 1, 0, 0, 0, 0, time.Local)
 	day1 := monthStart
@@ -1359,8 +1361,10 @@ func TestChartsViewRendersTooltipBreakdown(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
 
 	view := m.View()
-	if !strings.Contains(view, "Cost top-3 (spenders)") || !strings.Contains(view, "Performance top-3") || !strings.Contains(view, "Responsibility top-3") {
-		t.Fatalf("expected all three panel labels in view, got: %q", view)
+	for _, want := range []string{"Cost chart", "Performance Top 3", "Responsibility Top 3"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected %q in view, got: %q", want, view)
+		}
 	}
 	if !strings.Contains(view, "Tooltip: "+day2.Format("Jan 02")) {
 		t.Fatalf("expected tooltip for selected day, got: %q", view)
