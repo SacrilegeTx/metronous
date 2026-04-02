@@ -490,7 +490,14 @@ func (m ChartsModel) View() string {
 					continue
 				}
 				// Center bar in the cell.
-				row += " " + blocks[segmentModels[seg]] + " " + " "
+				model := segmentModels[seg]
+				cell := blocks[model]
+				globalIdx := chunkStart + i
+				if globalIdx == m.cursorDayIndex {
+					// Highlight selected column.
+					cell = lipgloss.NewStyle().Foreground(colors[model]).Background(lipgloss.Color("240")).Render("█")
+				}
+				row += " " + cell + " " + " "
 			}
 			lines = append(lines, row)
 		}
