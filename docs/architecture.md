@@ -23,7 +23,7 @@ This document describes the runtime architecture of Metronous, focusing on compo
 | **Metronous Daemon** (`metronous server --daemon-mode`) | Long-lived systemd user service that ingests telemetry, stores it in SQLite, runs weekly benchmarks, exposes HTTP API | Go | Managed by systemd; one instance per user; survives OpenCode restarts |
 | **SQLite Stores** | Persistent storage for raw events (`tracking.db`) and pre-aggregated benchmark data (`benchmark.db`) | SQLite via `internal/store/sqlite/` | File-based; located in `~/.metronous/data/` |
 | **CLI (`metronous` command)** | User-facing commands: `install`, `init`, `benchmark`, `report`, `dashboard`, etc. | Go/Cobra | Interacts with daemon via direct function calls (when run locally) or HTTP (if daemon remote—not currently supported) |
-| **TUI Dashboard** (`metronous dashboard`) | Terminal UI showing Tracking, Benchmark, and Config tabs | Go/Bubbletea | Reads directly from SQLite files; presents telemetry and benchmark results |
+| **TUI Dashboard** (`metronous dashboard`) | Terminal UI showing Tracking, Benchmark, Charts, and Config tabs | Go/Bubbletea | Reads directly from SQLite files; presents telemetry, cost charts, and benchmark results |
 | **OpenCode MCP Configuration** | Tells OpenCode how to reach the shim | JSON in `~/.config/opencode/opencode.json` | After `metronous install`: `{ "mcp": { "metronous": { "command": ["/absolute/path/to/metronous", "mcp"], "type": "local" } } }` |
 
 ---
@@ -91,7 +91,7 @@ This document describes the runtime architecture of Metronous, focusing on compo
     - Result: a verdict (`KEEP`, `SWITCH`, or `INSUFFICIENT_DATA`) per model, plus an `active_model` recommendation written to `~/.metronous/thresholds.json`.
 
 7. **Presentation**  
-   - TUI Dashboard reads `tracking.db` (for real‑time event stream) and `benchmark.db`/`thresholds.json` (for benchmark tab and active model display).
+    - TUI Dashboard reads `tracking.db` (for real-time event stream and daily cost charts) and `benchmark.db`/`thresholds.json` (for benchmark tab and active model display).
    - `metronous report` CLI prints formatted tables from the same sources.
    - User reviews the recommendation in the dashboard or CLI report and manually decides whether to change the active model in OpenCode.
 
