@@ -636,6 +636,37 @@ func panelBarHeight(totalHeight int) int {
 	return barHeight
 }
 
+func chartCostToUnits(cost, minPositive, maxTotal float64, barUnits int, selectedCount int) int {
+	if cost <= 0 || selectedCount == 0 || barUnits <= 0 {
+		return 0
+	}
+	if maxTotal <= 0 {
+		maxTotal = cost
+	}
+	if minPositive <= 0 {
+		minPositive = cost
+	}
+	logMin := math.Log10(minPositive)
+	logMax := math.Log10(maxTotal)
+	if logMax-logMin < 1e-9 {
+		return barUnits
+	}
+	r := (math.Log10(cost) - logMin) / (logMax - logMin)
+	if r < 0 {
+		r = 0
+	}
+	if r > 1 {
+		r = 1
+	}
+	// Reserve the first half-block for the minimum positive value, then spread
+	// the remaining positive range across the rest of the available units.
+	units := 1 + int(math.Ceil(r*float64(barUnits-1)))
+	if units > barUnits {
+		units = barUnits
+	}
+	return units
+}
+
 func renderChartPanel(title string, days []time.Time, cursorDayIndex, width, height int, data chartPanelData) []string {
 	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(title)}
 	if len(days) == 0 || len(data.selectedModels) == 0 {
@@ -710,29 +741,13 @@ func renderChartPanel(title string, days []time.Time, cursorDayIndex, width, hei
 		const unitsPerBlock = 2 // each terminal row represents 2 half-block units
 		barUnits := barHeight * unitsPerBlock
 		costToUnits := func(cost float64) int {
-			if cost <= 0 || len(data.selectedModels) == 0 {
-				return 0
-			}
 			if uniformPositive {
+				if cost <= 0 || len(data.selectedModels) == 0 {
+					return 0
+				}
 				return barUnits
 			}
-			lg := math.Log10(cost)
-			r := (lg - logMin) / (logMax - logMin)
-			if r < 0 {
-				r = 0
-			}
-			if r > 1 {
-				r = 1
-			}
-			b := int(math.Round(r * float64(barUnits)))
-			// If the value is positive but extremely small, keep at least 0.5 block.
-			if b < 1 {
-				b = 1
-			}
-			if b > barUnits {
-				b = barUnits
-			}
-			return b
+			return chartCostToUnits(cost, minPositive, maxTotal, barUnits, len(data.selectedModels))
 		}
 		costToBlockRows := func(cost float64) int {
 			units := costToUnits(cost)

@@ -153,3 +153,22 @@ func TestChartsMouseCursorSelectsExpectedDay(t *testing.T) {
 		t.Fatalf("expected cursorDayIndex %d, got %d", wantDay, m.cursorDayIndex)
 	}
 }
+
+func TestChartCostToUnitsShowsGrowthAboveMinimumHalfBlock(t *testing.T) {
+	const barUnits = 12
+	minPositive := 0.001
+	maxTotal := 1.0
+	day1Units := chartCostToUnits(0.001, minPositive, maxTotal, barUnits, 1)
+	day2Units := chartCostToUnits(0.002, minPositive, maxTotal, barUnits, 1)
+	day3Units := chartCostToUnits(1.0, minPositive, maxTotal, barUnits, 1)
+
+	if day1Units <= 0 {
+		t.Fatalf("expected minimum visible units for day1, got %d", day1Units)
+	}
+	if day2Units <= day1Units {
+		t.Fatalf("expected day2 (%d) to map above day1 (%d)", day2Units, day1Units)
+	}
+	if day3Units <= day2Units {
+		t.Fatalf("expected day3 (%d) to map above day2 (%d)", day3Units, day2Units)
+	}
+}

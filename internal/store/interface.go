@@ -72,7 +72,8 @@ type EventQuery struct {
 	// Since filters events on or after this timestamp (zero = no lower bound).
 	Since time.Time
 
-	// Until filters events before or on this timestamp (zero = no upper bound).
+	// Until filters events before or on this timestamp (inclusive; zero = no
+	// upper bound). Note: QueryDailyCostByModel uses [since, until) semantics.
 	Until time.Time
 
 	// Limit caps the number of events returned (0 = no limit).
@@ -96,10 +97,12 @@ type AgentSummary struct {
 	// TotalEvents is the total number of events recorded.
 	TotalEvents int
 
-	// TotalCostUSD is the sum of all event costs in USD.
+	// TotalCostUSD is the cumulative cost across all sessions, computed as the
+	// sum of each session's final cumulative cost_usd (i.e., session delta).
 	TotalCostUSD float64
 
-	// AvgQuality is the mean quality score across all rated events.
+	// AvgQuality is the running mean quality score across all events, treating
+	// missing quality_score (nil) as 0.
 	AvgQuality float64
 }
 
@@ -186,7 +189,8 @@ type EventStore interface {
 	GetAgentSummary(ctx context.Context, agentID string) (AgentSummary, error)
 
 	// QueryDailyCostByModel aggregates total cost (USD) per model per local-day
-	// for events in the supplied time window.
+	// for events in the supplied time window. The local-day bucket uses the
+	// process-local timezone (time.Local).
 	// Implementations must treat the window as [since, until) and only consider
 	// events where event_type='complete'.
 	QueryDailyCostByModel(ctx context.Context, since, until time.Time) ([]DailyCostByModelRow, error)
