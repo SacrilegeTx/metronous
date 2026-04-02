@@ -275,10 +275,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "u":
-			// Only allow update if update is available
-			if !m.UpdateAvailable {
-				return m, nil
-			}
 			// Use absolute path to avoid PATH issues
 			exePath, err := os.Executable()
 			if err != nil {
@@ -440,9 +436,9 @@ func (m *AppModel) View() string {
 	}
 
 	// Status bar - show "u: update" only if update is available
-	hint := statusBarStyle.Render("↑/↓: navigate  q: quit  1/2/3/4/5 or ←/→: switch tabs  ctrl+s: save  ctrl+r: reload")
+	hint := statusBarStyle.Render("↑/↓: navigate  q: quit  1/2/3/4/5 or ←/→: switch tabs  ctrl+s: save  ctrl+r: reload  u: update")
 	if m.UpdateAvailable {
-		hint = statusBarStyle.Render("↑/↓: navigate  q: quit  1/2/3/4/5 or ←/→: switch tabs  ctrl+s: save  ctrl+r: reload  u: update")
+		// Keep hint as-is; banner below will explain the specific latest version.
 	}
 
 	return prefix + fmt.Sprintf("%s\n%s\n%s\n%s", tabBar, banner, content, hint)
