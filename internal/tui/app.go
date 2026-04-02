@@ -152,7 +152,7 @@ func NewAppModel(es store.EventStore, bs store.BenchmarkStore, configPath string
 	return AppModel{
 		CurrentTab:       TabTracking,
 		tracking:         NewTrackingModel(es),
-		benchmarkSummary: NewBenchmarkSummaryModel(bs),
+		benchmarkSummary: NewBenchmarkSummaryModel(bs, iwr),
 		benchmark:        NewBenchmarkModel(bs, dataDir, workDir, iwr),
 		config:           NewConfigModel(configPath),
 		charts:           NewChartsModel(es, bs),

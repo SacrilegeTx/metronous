@@ -66,6 +66,9 @@ type BenchmarkSummaryModel struct {
 	offset        int
 	loading       bool
 	lastViewLines int
+	runner        IntraweekRunner
+	running       bool
+	runErr        error
 }
 
 const maxSummaryRows = 10
@@ -85,11 +88,13 @@ func maxInt(a, b int) int {
 }
 
 // NewBenchmarkSummaryModel creates a BenchmarkSummaryModel wired to the given BenchmarkStore.
-func NewBenchmarkSummaryModel(bs store.BenchmarkStore) BenchmarkSummaryModel {
+// r is an optional IntraweekRunner; pass nil to disable F5 manual runs.
+func NewBenchmarkSummaryModel(bs store.BenchmarkStore, r IntraweekRunner) BenchmarkSummaryModel {
 	return BenchmarkSummaryModel{
 		bs:      bs,
 		loading: true,
 		offset:  0,
+		runner:  r,
 	}
 }
 
@@ -113,6 +118,11 @@ func (m BenchmarkSummaryModel) Update(msg tea.Msg) (BenchmarkSummaryModel, tea.C
 			}),
 			m.fetchSummary(),
 		)
+
+	case intraweekRunDoneMsg:
+		m.running = false
+		m.runErr = msg.Err
+		return m, m.fetchSummary()
 
 	case BenchmarkSummaryDataMsg:
 		m.loading = false
@@ -158,6 +168,18 @@ func (m BenchmarkSummaryModel) Update(msg tea.Msg) (BenchmarkSummaryModel, tea.C
 				m.cursor++
 				if m.cursor >= m.offset+maxSummaryRows {
 					m.offset = m.cursor - (maxSummaryRows - 1)
+				}
+			}
+		case "f5":
+			if !m.running && m.runner != nil {
+				m.running = true
+				m.runErr = nil
+				r := m.runner
+				return m, func() tea.Msg {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+					defer cancel()
+					err := r.RunIntraweek(ctx, 7)
+					return intraweekRunDoneMsg{Err: err}
 				}
 			}
 		}
@@ -393,7 +415,20 @@ func max64(a, b float64) float64 {
 func (m *BenchmarkSummaryModel) View() string {
 	var sb strings.Builder
 
-	sb.WriteString(titleStyle.Render("Benchmark Summary") + "\n\n")
+	sb.WriteString(titleStyle.Render("Benchmark Summary") + "\n")
+
+	// F5 indicator — always visible below the title.
+	f5Style := lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true) // yellow
+	dimS := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	if m.running {
+		runningStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("226")).Bold(true)
+		sb.WriteString(runningStyle.Render("  ⏳ Running intraweek benchmark...") + "\n\n")
+	} else if m.runErr != nil {
+		errRunStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+		sb.WriteString(errRunStyle.Render(fmt.Sprintf("  ✗ Intraweek run failed: %v", m.runErr)) + "\n\n")
+	} else {
+		sb.WriteString(dimS.Render("  Press") + " " + f5Style.Render("F5") + dimS.Render(" to run an intraweek benchmark now") + "\n\n")
+	}
 
 	if m.loading {
 		sb.WriteString(dimStyle.Render("  Loading…") + "\n")

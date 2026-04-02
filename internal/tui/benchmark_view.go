@@ -66,11 +66,11 @@ var detailLabelStyle = lipgloss.NewStyle().
 var f5KeyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("19")).Bold(true) // dark blue
 
 // benchColWidths / benchColNames describe the benchmark history table.
-// Columns: Time | Agent | Type | Accuracy | P95 Latency | Verdict | → Model | Savings
+// Columns: Time | Agent | Type | Accuracy | Avg Response | Verdict | → Model | Savings
 // "Time" shows full date+time (YYYY-MM-DD HH:MM) so width is 17 to avoid truncation.
 var (
-	benchColWidths = []int{17, 16, 9, 10, 12, 18, 16, 8}
-	benchColNames  = []string{"Time", "Agent", "Type", "Accuracy", "P95 Latency", "Verdict", "→ Model", "Savings"}
+	benchColWidths = []int{17, 16, 9, 10, 13, 18, 16, 8}
+	benchColNames  = []string{"Time", "Agent", "Type", "Accuracy", "Avg Response", "Verdict", "→ Model", "Savings"}
 )
 
 // verdictColIdx is the index of the Verdict column in benchColNames/benchColWidths.
@@ -602,15 +602,44 @@ func renderDetailPanel(run store.BenchmarkRun, pricing map[string]float64, trend
 	return sb.String()
 }
 
-// formatVerdictTrend formats a slice of verdict strings into a human-readable trend line.
-// e.g. "SWITCH → SWITCH → KEEP → KEEP  (↑ improving)"
+// verdictAbbrev returns a single-character abbreviation for a verdict.
+// Legend: K=KEEP  S=SWITCH  U=URGENT_SWITCH  ?=INSUFFICIENT_DATA
+func verdictAbbrev(v string) string {
+	switch store.VerdictType(v) {
+	case store.VerdictKeep:
+		return "K"
+	case store.VerdictSwitch:
+		return "S"
+	case store.VerdictUrgentSwitch:
+		return "U"
+	case store.VerdictInsufficientData:
+		return "?"
+	default:
+		return "?"
+	}
+}
+
+// formatVerdictTrend formats the last 5 verdicts as abbreviated single chars
+// separated by arrows, followed by a direction indicator.
+// Legend line is appended below.
+// e.g. "K → K → S → K → ?  (↓ degrading)\n  Legend: K=KEEP  S=SWITCH  U=URGENT_SWITCH  ?=INSUFFICIENT_DATA"
 func formatVerdictTrend(trend []string) string {
 	if len(trend) == 0 {
 		return "-"
 	}
-	trendLine := strings.Join(trend, " → ")
+	// Take last 5 entries (most recent).
+	window := trend
+	if len(window) > 5 {
+		window = window[len(window)-5:]
+	}
+	abbrevs := make([]string, len(window))
+	for i, v := range window {
+		abbrevs[i] = verdictAbbrev(v)
+	}
+	trendLine := strings.Join(abbrevs, " → ")
 	direction := trendDirection(trend)
-	return fmt.Sprintf("%s  (%s)", trendLine, direction)
+	legend := "  Legend: K=KEEP  S=SWITCH  U=URGENT_SWITCH  ?=INSUFFICIENT_DATA"
+	return fmt.Sprintf("%s  (%s)\n%s", trendLine, direction, legend)
 }
 
 // verdictSeverity returns a numeric severity for a verdict (lower = better).
@@ -782,7 +811,18 @@ func formatBenchmarkRow(run store.BenchmarkRun, agentType string, pricing map[st
 	}
 
 	accuracy := fmt.Sprintf("%.1f%%", run.Accuracy*100)
-	p95 := fmt.Sprintf("%.0fms", run.P95LatencyMs)
+	// Use AvgTurnMs (clean turn latency from complete events only).
+	// Fall back to P95LatencyMs for runs recorded before the migration.
+	turnMs := run.AvgTurnMs
+	if turnMs <= 0 {
+		turnMs = run.P95LatencyMs
+	}
+	var p95 string
+	if turnMs <= 0 {
+		p95 = "0.0s"
+	} else {
+		p95 = fmt.Sprintf("%.1fs", turnMs/1000)
+	}
 
 	// → Model column: show RecommendedModel only for SWITCH/URGENT_SWITCH with a non-empty value.
 	recommendedModel := "-"

@@ -1237,7 +1237,7 @@ func TestAppTabBarContainsSummaryAndDetailed(t *testing.T) {
 
 // TestBenchmarkSummaryViewShowsTitle verifies the summary view renders its title.
 func TestBenchmarkSummaryViewShowsTitle(t *testing.T) {
-	m := tui.NewBenchmarkSummaryModel(nil)
+	m := tui.NewBenchmarkSummaryModel(nil, nil)
 	// Inject synthetic rows directly via the data message.
 	m, _ = m.Update(tui.BenchmarkSummaryDataMsg{
 		Rows: []tui.SummaryRowForTest{
@@ -1252,7 +1252,7 @@ func TestBenchmarkSummaryViewShowsTitle(t *testing.T) {
 
 // TestBenchmarkSummaryViewShowsEmptyState verifies the empty-state message.
 func TestBenchmarkSummaryViewShowsEmptyState(t *testing.T) {
-	m := tui.NewBenchmarkSummaryModel(nil)
+	m := tui.NewBenchmarkSummaryModel(nil, nil)
 	m, _ = m.Update(tui.BenchmarkSummaryDataMsg{Rows: nil})
 	view := m.View()
 	if !strings.Contains(view, "No benchmark runs yet") {
@@ -1262,7 +1262,7 @@ func TestBenchmarkSummaryViewShowsEmptyState(t *testing.T) {
 
 // TestBenchmarkSummaryCursorNavigation verifies ↑/↓ moves the cursor.
 func TestBenchmarkSummaryCursorNavigation(t *testing.T) {
-	m := tui.NewBenchmarkSummaryModel(nil)
+	m := tui.NewBenchmarkSummaryModel(nil, nil)
 	rows := []tui.SummaryRowForTest{
 		{AgentID: "agent-a", Model: "gpt-4", Runs: 2},
 		{AgentID: "agent-b", Model: "gpt-4", Runs: 1},
@@ -1295,7 +1295,7 @@ func TestBenchmarkSummaryCursorNavigation(t *testing.T) {
 
 // TestBenchmarkSummaryViewRendersAgentRows verifies agent rows appear in the view.
 func TestBenchmarkSummaryViewRendersAgentRows(t *testing.T) {
-	m := tui.NewBenchmarkSummaryModel(nil)
+	m := tui.NewBenchmarkSummaryModel(nil, nil)
 	rows := []tui.SummaryRowForTest{
 		{AgentID: "sdd-orchestrator", Model: "claude-sonnet", Runs: 5},
 		{AgentID: "sdd-apply", Model: "gpt-4-mini", Runs: 3},
