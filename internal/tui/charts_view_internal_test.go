@@ -97,7 +97,8 @@ func TestChartsFetchRanksMonthlyCards(t *testing.T) {
 		t.Fatalf("expected ChartsDataMsg, got %T", msg)
 	}
 
-	if got, want := data.CostSelectedModels, []string{"alpha", "beta", "gamma"}; !reflect.DeepEqual(got, want) {
+	// Cost chart now shows top 5; with 4 models all 4 should appear.
+	if got, want := data.CostSelectedModels, []string{"alpha", "beta", "gamma", "delta"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected cost ranking: got %v want %v", got, want)
 	}
 	if got, want := data.PerformanceSelectedModels, []string{"alpha", "beta", "gamma"}; !reflect.DeepEqual(got, want) {

@@ -1152,6 +1152,47 @@ func TestInsertEventWithExplicitID(t *testing.T) {
 	}
 }
 
+func TestQueryDailyCostByModelNormalizesProviderPrefixes(t *testing.T) {
+	es := newTestStore(t)
+	ctx := context.Background()
+
+	cost := 0.50
+	ts := time.Date(2026, 4, 15, 10, 0, 0, 0, time.UTC)
+
+	// Same model, three different prefix variants
+	variants := []struct{ model, session string }{
+		{"opencode/claude-sonnet-4-6", "sess-opencode"},
+		{"anthropic/claude-sonnet-4-6", "sess-anthropic"},
+		{"claude-sonnet-4-6", "sess-bare"},
+	}
+	for _, v := range variants {
+		c := cost
+		ev := store.Event{
+			AgentID: "agent", SessionID: v.session, EventType: "complete",
+			Model: v.model, Timestamp: ts, CostUSD: &c,
+		}
+		if _, err := es.InsertEvent(ctx, ev); err != nil {
+			t.Fatalf("InsertEvent %s: %v", v.model, err)
+		}
+		ts = ts.Add(time.Minute)
+	}
+
+	rows, err := es.QueryDailyCostByModel(ctx,
+		time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 4, 16, 0, 0, 0, 0, time.UTC),
+	)
+	if err != nil {
+		t.Fatalf("QueryDailyCostByModel: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row (all variants merged), got %d: %+v", len(rows), rows)
+	}
+	if rows[0].Model != "claude-sonnet-4-6" {
+		t.Fatalf("expected normalized model claude-sonnet-4-6, got %q", rows[0].Model)
+	}
+	assertFloatClose(t, rows[0].TotalCostUSD, cost*3)
+}
+
 // TestWALModeIsEnabled verifies WAL journal mode is applied.
 func TestWALModeIsEnabled(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
