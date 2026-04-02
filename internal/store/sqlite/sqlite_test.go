@@ -534,13 +534,13 @@ func TestGetAgentSummaryAggregationAccuracy(t *testing.T) {
 	ctx := context.Background()
 
 	const numEvents = 5
-	totalCost := 0.0
+	expectedTotalCost := 0.0
 	totalQuality := 0.0
 
 	for i := 0; i < numEvents; i++ {
 		cost := 0.01 * float64(i+1)
 		quality := 0.80 + 0.04*float64(i)
-		totalCost += cost
+		expectedTotalCost = cost // costs are cumulative per session; agent summary stores MAX per session
 		totalQuality += quality
 
 		e := sampleEvent("agent-agg", "session-agg", "complete")
@@ -561,15 +561,51 @@ func TestGetAgentSummaryAggregationAccuracy(t *testing.T) {
 		t.Errorf("TotalEvents: got %d, want %d", summary.TotalEvents, numEvents)
 	}
 
-	// Total cost should match sum within float precision.
-	if diff := summary.TotalCostUSD - totalCost; diff < -0.001 || diff > 0.001 {
-		t.Errorf("TotalCostUSD: got %.4f, want %.4f", summary.TotalCostUSD, totalCost)
+	// Total cost should match MAX within float precision.
+	if diff := summary.TotalCostUSD - expectedTotalCost; diff < -0.001 || diff > 0.001 {
+		t.Errorf("TotalCostUSD: got %.4f, want %.4f", summary.TotalCostUSD, expectedTotalCost)
 	}
 
 	// Average quality should be within 1% of expected.
 	expectedAvg := totalQuality / float64(numEvents)
 	if diff := summary.AvgQuality - expectedAvg; diff < -0.01 || diff > 0.01 {
 		t.Errorf("AvgQuality: got %.4f, want %.4f", summary.AvgQuality, expectedAvg)
+	}
+}
+
+// TestGetAgentSummaryTotalCostUsesSessionMax verifies that total_cost_usd
+// in agent_summaries does not double-count when a session emits multiple
+// complete events with cumulative cost_usd values.
+func TestGetAgentSummaryTotalCostUsesSessionMax(t *testing.T) {
+	es := newTestStore(t)
+	ctx := context.Background()
+
+	// Same session emits two complete events with cumulative costs.
+	cost1 := 0.10
+	cost2 := 0.50
+
+	e1 := sampleEvent("agent-1", "session-1", "complete")
+	e1.CostUSD = &cost1
+	e1.QualityScore = nil // keep deterministic
+	if _, err := es.InsertEvent(ctx, e1); err != nil {
+		t.Fatalf("InsertEvent e1: %v", err)
+	}
+
+	e2 := sampleEvent("agent-1", "session-1", "complete")
+	e2.CostUSD = &cost2
+	e2.QualityScore = nil
+	if _, err := es.InsertEvent(ctx, e2); err != nil {
+		t.Fatalf("InsertEvent e2: %v", err)
+	}
+
+	summary, err := es.GetAgentSummary(ctx, "agent-1")
+	if err != nil {
+		t.Fatalf("GetAgentSummary: %v", err)
+	}
+
+	// Should equal MAX(cost_usd) for session-1, not cost1+cost2.
+	if summary.TotalCostUSD != cost2 {
+		t.Errorf("TotalCostUSD: got %.2f, want %.2f", summary.TotalCostUSD, cost2)
 	}
 }
 

@@ -169,11 +169,42 @@ func (es *EventStore) upsertAgentSummaryTx(ctx context.Context, tx *sql.Tx, even
 	`
 
 	// Only update cost from complete events — cost_usd is cumulative per session,
-	// so only the final complete event carries the true session total.
-	// Accumulating cost from every tool_call would massively inflate the summary.
-	costUSD := 0.0
+	// so we maintain total_cost_usd as the sum of MAX(cost_usd) per session.
+	// When the same session emits multiple complete events, cost_usd is
+	// cumulative, so we only add the incremental increase in that max.
+	costDeltaUSD := 0.0
 	if event.EventType == "complete" && event.CostUSD != nil {
-		costUSD = *event.CostUSD
+		// newMax includes the just-inserted event.
+		const qNew = `
+			SELECT COALESCE(MAX(cost_usd), 0)
+			FROM events
+			WHERE session_id = ?
+				AND event_type = 'complete'
+				AND cost_usd IS NOT NULL
+		`
+		var newMax float64
+		if err := tx.QueryRowContext(ctx, qNew, event.SessionID).Scan(&newMax); err != nil {
+			return fmt.Errorf("compute new max cost_usd: %w", err)
+		}
+
+		// oldMax excludes the just-inserted event.
+		const qOld = `
+			SELECT COALESCE(MAX(cost_usd), 0)
+			FROM events
+			WHERE session_id = ?
+				AND event_type = 'complete'
+				AND cost_usd IS NOT NULL
+				AND id <> ?
+		`
+		var oldMax float64
+		if err := tx.QueryRowContext(ctx, qOld, event.SessionID, event.ID).Scan(&oldMax); err != nil {
+			return fmt.Errorf("compute old max cost_usd: %w", err)
+		}
+
+		delta := newMax - oldMax
+		if delta > 0 {
+			costDeltaUSD = delta
+		}
 	}
 	qualityScore := 0.0
 	if event.QualityScore != nil {
@@ -184,7 +215,7 @@ func (es *EventStore) upsertAgentSummaryTx(ctx context.Context, tx *sql.Tx, even
 	_, err := tx.ExecContext(ctx, q,
 		event.AgentID,
 		event.Timestamp.UTC().UnixMilli(),
-		costUSD,
+		costDeltaUSD,
 		qualityScore,
 		now,
 	)
