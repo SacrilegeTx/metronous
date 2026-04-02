@@ -189,6 +189,8 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 			totalSamples int
 			sumAccuracy  float64
 			sumP95       float64
+			sumROI       float64
+			roiSamples   int
 			lastCostUSD  float64
 			lastVerdict  store.VerdictType
 			lastRunAt    time.Time
@@ -205,7 +207,7 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 				if r.RunAt.IsZero() {
 					continue
 				}
-				k := key{agentID, r.Model}
+				k := key{agentID, store.NormalizeModelName(r.Model)}
 				a := aggMap[k]
 				if a == nil {
 					a = &agg{}
@@ -224,6 +226,11 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 					a.totalSamples += samples
 					a.sumAccuracy += r.Accuracy * float64(samples)
 					a.sumP95 += r.P95LatencyMs * float64(samples)
+					// Accumulate ROI only when cost data is reliable (roi > 0).
+					if r.ROIScore > 0 {
+						a.sumROI += r.ROIScore * float64(samples)
+						a.roiSamples += samples
+					}
 				}
 				a.runs++
 				// Cost is not accumulated across runs because weekly/intraweek
@@ -248,16 +255,22 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 			}
 		}
 
+		const defaultMinROI = 0.05 // matches config.DefaultThresholdValues
+
 		// Build sorted rows.
 		var rows []summaryRow
 		for k, a := range aggMap {
 			avgAcc := 0.0
 			avgP95 := 0.0
+			avgROI := 0.0
 			if a.totalSamples > 0 {
 				avgAcc = a.sumAccuracy / float64(a.totalSamples)
 				avgP95 = a.sumP95 / float64(a.totalSamples)
 			}
-			health := computeHealthScore(avgAcc, avgP95, a.lastVerdict)
+			if a.roiSamples > 0 {
+				avgROI = a.sumROI / float64(a.roiSamples)
+			}
+			health := computeHealthScore(avgAcc, avgP95, a.lastVerdict, avgROI, defaultMinROI)
 			rows = append(rows, summaryRow{
 				AgentID:      k.agent,
 				Model:        k.model,
@@ -287,25 +300,55 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 }
 
 // computeHealthScore returns a 0-100 composite score.
-// Formula (Option B):
-//   - Accuracy contributes 50 points (accuracy * 50).
-//   - P95 latency contributes 30 points (30 * max(0, 1 - p95/10000)).
-//   - Verdict contributes 20 points: KEEP=20, SWITCH=10, URGENT_SWITCH=0, other=5.
-func computeHealthScore(accuracy, p95Ms float64, verdict store.VerdictType) float64 {
+//
+// Formula:
+//   - Accuracy:  50 pts  (accuracy * 50)
+//   - Latency:   20 pts  (0 if p95 not measured; 20*(1-p95/10000) otherwise)
+//   - Verdict:   20 pts  (KEEP=20, SWITCH=5, URGENT_SWITCH=0, INSUFFICIENT=8, other=5)
+//   - ROI:       10 pts  (5=neutral when no cost data; scaled to 10 by minROIScore reference)
+//
+// roiScore is the raw ROI value (tool_success_rate / cost_per_session); 0 means
+// no cost data available (free model or unreliable billing).
+// minROIScore is the threshold from config used as the reference point for scaling.
+func computeHealthScore(accuracy, p95Ms float64, verdict store.VerdictType, roiScore, minROIScore float64) float64 {
+	// Accuracy: 0-50 pts.
 	accPart := accuracy * 50
-	latPart := 30 * max64(0, 1-p95Ms/10000)
+
+	// Latency: 0-20 pts.
+	// p95=0 means not measured — award neutral 10pts instead of full 20.
+	var latPart float64
+	if p95Ms <= 0 {
+		latPart = 10
+	} else {
+		latPart = 20 * max64(0, 1-p95Ms/10000)
+	}
+
+	// Verdict: 0-20 pts.
 	var verdictPart float64
 	switch verdict {
 	case store.VerdictKeep:
 		verdictPart = 20
 	case store.VerdictSwitch:
-		verdictPart = 10
+		verdictPart = 5
 	case store.VerdictUrgentSwitch:
 		verdictPart = 0
+	case store.VerdictInsufficientData:
+		verdictPart = 8
 	default:
 		verdictPart = 5
 	}
-	score := accPart + latPart + verdictPart
+
+	// ROI: 0-10 pts.
+	// 0 cost data (free model or no billing) → neutral 5pts.
+	// Paid model with roi data → scaled 0-10 using minROIScore as reference.
+	var roiPart float64
+	if roiScore <= 0 || minROIScore <= 0 {
+		roiPart = 5
+	} else {
+		roiPart = 10 * min64(1, roiScore/minROIScore)
+	}
+
+	score := accPart + latPart + verdictPart + roiPart
 	if score > 100 {
 		score = 100
 	}
@@ -313,6 +356,14 @@ func computeHealthScore(accuracy, p95Ms float64, verdict store.VerdictType) floa
 		score = 0
 	}
 	return score
+}
+
+// min64 returns the minimum of two float64 values.
+func min64(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // max64 returns the maximum of two float64 values.

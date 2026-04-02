@@ -21,7 +21,7 @@ func GetBenchmarkSummaryRows(m BenchmarkSummaryModel) []summaryRow {
 
 // ComputeHealthScoreForTest exposes computeHealthScore for unit testing.
 func ComputeHealthScoreForTest(accuracy, p95Ms float64, verdict store.VerdictType) float64 {
-	return computeHealthScore(accuracy, p95Ms, verdict)
+	return computeHealthScore(accuracy, p95Ms, verdict, 0, defaultChartMinROI)
 }
 
 // AggregateSummaryRowsForTest runs the same aggregation logic as fetchSummary
@@ -84,7 +84,7 @@ func AggregateSummaryRowsForTest(runs []store.BenchmarkRun) []summaryRow {
 			avgAcc = a.sumAccuracy / float64(a.totalSamples)
 			avgP95 = a.sumP95 / float64(a.totalSamples)
 		}
-		health := computeHealthScore(avgAcc, avgP95, a.lastVerdict)
+		health := computeHealthScore(avgAcc, avgP95, a.lastVerdict, 0, defaultChartMinROI)
 		rows = append(rows, summaryRow{
 			AgentID:      k.agent,
 			Model:        k.model,

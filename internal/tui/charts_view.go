@@ -106,6 +106,10 @@ func totalsByCost(rows []store.DailyCostByModelRow) map[string]float64 {
 	return totals
 }
 
+// defaultChartMinROI is the reference ROI used when the full config is not available.
+// Matches config.DefaultThresholdValues().Defaults.MinROIScore.
+const defaultChartMinROI = 0.05
+
 func rankModelsByPerformance(summaries []store.BenchmarkModelSummary, active map[string]struct{}, limit int) []string {
 	type item struct {
 		model string
@@ -119,7 +123,7 @@ func rankModelsByPerformance(summaries []store.BenchmarkModelSummary, active map
 		}
 		items = append(items, item{
 			model: s.Model,
-			score: computeHealthScore(s.AvgAccuracy, s.AvgP95Ms, s.LastVerdict),
+			score: computeHealthScore(s.AvgAccuracy, s.AvgP95Ms, s.LastVerdict, 0, defaultChartMinROI),
 			cost:  s.TotalCostUSD,
 		})
 	}
@@ -181,6 +185,8 @@ type chartModelStats struct {
 	TotalSamples        int
 	SumAccuracy         float64
 	SumP95              float64
+	SumROI              float64
+	ROISamples          int
 	LastVerdict         store.VerdictType
 	LastRunAt           time.Time
 	HealthScore         float64
@@ -319,6 +325,10 @@ func aggregateChartsModelStats(runs []store.BenchmarkRun) map[string]*chartModel
 			s.TotalSamples += samples
 			s.SumAccuracy += run.Accuracy * float64(samples)
 			s.SumP95 += run.P95LatencyMs * float64(samples)
+			if run.ROIScore > 0 {
+				s.SumROI += run.ROIScore * float64(samples)
+				s.ROISamples += samples
+			}
 		}
 
 		if run.RunAt.After(s.LastRunAt) {
@@ -332,22 +342,31 @@ func aggregateChartsModelStats(runs []store.BenchmarkRun) map[string]*chartModel
 		}
 
 		weight := responsibilityWeightForAgent(run.AgentID)
-		if run.SampleSize <= 0 {
-			run.SampleSize = 1
+		samples := run.SampleSize
+		if samples <= 0 {
+			samples = 1
 		}
-		s.roleWeightSum += float64(run.SampleSize)
-		weightedScore := computeHealthScore(run.Accuracy, run.P95LatencyMs, run.Verdict) * weight
-		s.roleWeightedScore += weightedScore * float64(run.SampleSize)
+		runROI := 0.0
+		if run.ROIScore > 0 {
+			runROI = run.ROIScore
+		}
+		s.roleWeightSum += float64(samples)
+		weightedScore := computeHealthScore(run.Accuracy, run.P95LatencyMs, run.Verdict, runROI, defaultChartMinROI) * weight
+		s.roleWeightedScore += weightedScore * float64(samples)
 	}
 
 	for _, s := range stats {
+		avgAcc := 0.0
+		avgP95 := 0.0
+		avgROI := 0.0
 		if s.TotalSamples > 0 {
-			avgAcc := s.SumAccuracy / float64(s.TotalSamples)
-			avgP95 := s.SumP95 / float64(s.TotalSamples)
-			s.HealthScore = computeHealthScore(avgAcc, avgP95, s.LastVerdict)
-		} else {
-			s.HealthScore = computeHealthScore(0, 0, s.LastVerdict)
+			avgAcc = s.SumAccuracy / float64(s.TotalSamples)
+			avgP95 = s.SumP95 / float64(s.TotalSamples)
 		}
+		if s.ROISamples > 0 {
+			avgROI = s.SumROI / float64(s.ROISamples)
+		}
+		s.HealthScore = computeHealthScore(avgAcc, avgP95, s.LastVerdict, avgROI, defaultChartMinROI)
 		if s.roleWeightSum > 0 {
 			s.ResponsibilityScore = s.roleWeightedScore / s.roleWeightSum
 		} else {
@@ -395,11 +414,9 @@ func rankChartsByScoreForMonth(stats map[string]*chartModelStats, totals map[str
 	}
 	items := make([]item, 0, len(stats))
 	for _, s := range stats {
-		cost, ok := totals[s.Model]
-		if !ok {
-			// Only include models that have month spend rows in tracking.
-			continue
-		}
+		// Include all models with benchmark data regardless of cost.
+		// Free models (cost=0) should still appear in performance/responsibility rankings.
+		cost := totals[s.Model] // 0 if model is free or had no spend this month
 		items = append(items, item{model: s.Model, score: scoreFn(s), cost: cost})
 	}
 	sort.SliceStable(items, func(i, j int) bool {

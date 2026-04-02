@@ -104,7 +104,7 @@ func TestChartsFetchRanksMonthlyCards(t *testing.T) {
 	if got, want := data.PerformanceSelectedModels, []string{"alpha", "beta", "gamma"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected performance ranking: got %v want %v", got, want)
 	}
-	if got, want := data.ResponsibilitySelectedModels, []string{"beta", "gamma", "alpha"}; !reflect.DeepEqual(got, want) {
+	if got, want := data.ResponsibilitySelectedModels, []string{"beta", "alpha", "gamma"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected responsibility ranking: got %v want %v", got, want)
 	}
 
