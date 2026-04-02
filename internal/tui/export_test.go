@@ -37,6 +37,8 @@ func AggregateSummaryRowsForTest(runs []store.BenchmarkRun) []summaryRow {
 		lastCostUSD  float64
 		lastVerdict  store.VerdictType
 		lastRunAt    time.Time
+		lastAccuracy float64
+		lastP95      float64
 	}
 	aggMap := make(map[key]*agg)
 
@@ -63,7 +65,7 @@ func AggregateSummaryRowsForTest(runs []store.BenchmarkRun) []summaryRow {
 		}
 		a.runs++
 
-		if r.RunAt.After(a.lastRunAt) {
+		if r.RunAt.After(a.lastRunAt) || a.lastRunAt.IsZero() {
 			if !isInsufficient {
 				a.lastRunAt = r.RunAt
 				a.lastVerdict = r.Verdict
@@ -73,6 +75,8 @@ func AggregateSummaryRowsForTest(runs []store.BenchmarkRun) []summaryRow {
 				a.lastVerdict = r.Verdict
 				a.lastCostUSD = r.TotalCostUSD
 			}
+			a.lastAccuracy = r.Accuracy
+			a.lastP95 = r.P95LatencyMs
 		}
 	}
 
@@ -83,6 +87,9 @@ func AggregateSummaryRowsForTest(runs []store.BenchmarkRun) []summaryRow {
 		if a.totalSamples > 0 {
 			avgAcc = a.sumAccuracy / float64(a.totalSamples)
 			avgP95 = a.sumP95 / float64(a.totalSamples)
+		} else {
+			avgAcc = a.lastAccuracy
+			avgP95 = a.lastP95
 		}
 		health := computeHealthScore(avgAcc, avgP95, a.lastVerdict, 0, defaultChartMinROI)
 		rows = append(rows, summaryRow{

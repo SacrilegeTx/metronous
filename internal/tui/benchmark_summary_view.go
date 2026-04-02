@@ -194,6 +194,11 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 			lastCostUSD  float64
 			lastVerdict  store.VerdictType
 			lastRunAt    time.Time
+			// Fallback metrics from the most recent run (used when all runs are
+			// INSUFFICIENT_DATA so we don't display misleading 0% accuracy).
+			lastAccuracy float64
+			lastP95      float64
+			lastROI      float64
 		}
 		aggMap := make(map[key]*agg)
 
@@ -214,9 +219,10 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 					aggMap[k] = a
 				}
 
-				// INSUFFICIENT_DATA runs are excluded from metric averages and health
-				// because they have too few samples to be meaningful.
-				// They are still considered for LastVerdict if no better run exists.
+				// INSUFFICIENT_DATA runs are excluded from weighted metric averages
+				// because they have too few samples to be statistically meaningful.
+				// However we keep their raw metrics as a fallback so that pairs
+				// where ALL runs are insufficient don't show a misleading 0% accuracy.
 				isInsufficient := r.Verdict == store.VerdictInsufficientData || r.SampleSize < 50
 				if !isInsufficient {
 					samples := r.SampleSize
@@ -233,24 +239,22 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 					}
 				}
 				a.runs++
-				// Cost is not accumulated across runs because weekly/intraweek
-				// windows overlap, which would double-count events.
-				// We keep cost aligned with LastVerdict (lastCostUSD).
 
-				// LastVerdict: prefer the most recent non-INSUFFICIENT_DATA verdict.
-				// Falls back to INSUFFICIENT_DATA only if no valid run exists.
-				if r.RunAt.After(a.lastRunAt) {
+				// Always track the most recent run's raw metrics as fallback.
+				if r.RunAt.After(a.lastRunAt) || a.lastRunAt.IsZero() {
 					if !isInsufficient {
-						// Non-insufficient run is always a better LastVerdict candidate.
 						a.lastRunAt = r.RunAt
 						a.lastVerdict = r.Verdict
 						a.lastCostUSD = r.TotalCostUSD
 					} else if a.lastVerdict == "" || a.lastVerdict == store.VerdictInsufficientData {
-						// Only use INSUFFICIENT_DATA if we have nothing better yet.
 						a.lastRunAt = r.RunAt
 						a.lastVerdict = r.Verdict
 						a.lastCostUSD = r.TotalCostUSD
 					}
+					// Always update fallback metrics from the most recent run.
+					a.lastAccuracy = r.Accuracy
+					a.lastP95 = r.P95LatencyMs
+					a.lastROI = r.ROIScore
 				}
 			}
 		}
@@ -264,11 +268,19 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 			avgP95 := 0.0
 			avgROI := 0.0
 			if a.totalSamples > 0 {
+				// We have valid (non-insufficient) runs — use weighted averages.
 				avgAcc = a.sumAccuracy / float64(a.totalSamples)
 				avgP95 = a.sumP95 / float64(a.totalSamples)
+			} else {
+				// All runs were INSUFFICIENT_DATA — use the most recent run's raw
+				// metrics so we don't display a misleading 0% accuracy / 0ms latency.
+				avgAcc = a.lastAccuracy
+				avgP95 = a.lastP95
 			}
 			if a.roiSamples > 0 {
 				avgROI = a.sumROI / float64(a.roiSamples)
+			} else {
+				avgROI = a.lastROI
 			}
 			health := computeHealthScore(avgAcc, avgP95, a.lastVerdict, avgROI, defaultMinROI)
 			rows = append(rows, summaryRow{
