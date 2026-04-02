@@ -119,8 +119,9 @@ func TestAppTabSwitchingByArrowKeys(t *testing.T) {
 	// right → TabConfig
 	updated, _ = sendSpecialKey(m, tea.KeyRight)
 	m = updated.(*tui.AppModel)
-	if m.CurrentTab != tui.TabConfig {
-		t.Errorf("expected TabConfig after right arrow, got %d", m.CurrentTab)
+	// When on Charts, left/right should not switch tabs.
+	if m.CurrentTab != tui.TabCharts {
+		t.Errorf("expected TabCharts after right arrow, got %d", m.CurrentTab)
 	}
 
 	// left → TabCharts
@@ -133,8 +134,9 @@ func TestAppTabSwitchingByArrowKeys(t *testing.T) {
 	// left → TabBenchmarkDetailed
 	updated, _ = sendSpecialKey(m, tea.KeyLeft)
 	m = updated.(*tui.AppModel)
-	if m.CurrentTab != tui.TabBenchmarkDetailed {
-		t.Errorf("expected TabBenchmarkDetailed after left arrow, got %d", m.CurrentTab)
+	// When on Charts, left/right should not switch tabs.
+	if m.CurrentTab != tui.TabCharts {
+		t.Errorf("expected TabCharts after left arrow, got %d", m.CurrentTab)
 	}
 }
 

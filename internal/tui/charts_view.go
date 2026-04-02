@@ -164,17 +164,32 @@ func (m ChartsModel) View() string {
 		colors[model] = palette[i%len(palette)]
 	}
 
-	legend := ""
+	legendLines := []string{}
 	if len(segmentModels) > 0 {
-		parts := make([]string, 0, len(segmentModels))
-		for _, model := range segmentModels {
+		maxLegendWidth := m.width - 2
+		if maxLegendWidth < 40 {
+			maxLegendWidth = 80
+		}
+		line := "Legend: "
+		for i, model := range segmentModels {
 			c := colors[model]
 			block := lipgloss.NewStyle().Foreground(c).Render("█")
-			parts = append(parts, fmt.Sprintf("%s %s", block, model))
+			entry := fmt.Sprintf("%s %s", block, model)
+			sep := "  "
+			if i == 0 {
+				sep = ""
+			}
+			candidate := line + sep + entry
+			if lipgloss.Width(candidate) > maxLegendWidth && line != "Legend: " {
+				legendLines = append(legendLines, line)
+				line = "          " + entry
+			} else {
+				line = candidate
+			}
 		}
-		legend = "Legend: " + strings.Join(parts, "  ")
+		legendLines = append(legendLines, line)
 	} else {
-		legend = "Legend: (no data for selected month)"
+		legendLines = []string{"Legend: (no data for selected month)"}
 	}
 
 	// Prepare day buckets for the selected month.
@@ -207,7 +222,6 @@ func (m ChartsModel) View() string {
 	if m.loading {
 		lines = append(lines, "Loading…")
 	}
-	lines = append(lines, legend)
 	if m.err != nil {
 		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("Error: "+m.err.Error()))
 	}
@@ -261,6 +275,7 @@ func (m ChartsModel) View() string {
 	}
 
 	// Split chart in chunks if terminal is narrow.
+	chartLinesStart := len(lines)
 	for chunkStart := 0; chunkStart < len(days); chunkStart += chunkSize {
 		chunkEnd := chunkStart + chunkSize
 		if chunkEnd > len(days) {
@@ -295,6 +310,13 @@ func (m ChartsModel) View() string {
 
 		costToBlocks := func(cost float64) int {
 			if cost <= 0 || len(segmentModels) == 0 {
+				return 0
+			}
+			// If all positive totals are equal, avoid log-ratio collapsing to 0.
+			if maxTotal > 0 && math.Abs(maxTotal-minPositive)/maxTotal < 1e-12 {
+				if cost > 0 {
+					return barHeight
+				}
 				return 0
 			}
 			lg := math.Log10(cost)
@@ -438,6 +460,14 @@ func (m ChartsModel) View() string {
 		if chunkEnd < len(days) {
 			lines = append(lines, "")
 		}
+	}
+
+	// Legend below the chart.
+	if len(days) > 0 {
+		if len(lines) > chartLinesStart {
+			lines = append(lines, "")
+		}
+		lines = append(lines, legendLines...)
 	}
 
 	return strings.Join(lines, "\n")

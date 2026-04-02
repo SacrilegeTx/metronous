@@ -324,6 +324,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "left":
+			// Allow Charts tab to handle month navigation with arrow keys.
+			if m.CurrentTab == TabCharts {
+				break
+			}
 			if m.CurrentTab > 0 {
 				m.CurrentTab--
 			}
@@ -331,6 +335,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "right":
+			// Allow Charts tab to handle month navigation with arrow keys.
+			if m.CurrentTab == TabCharts {
+				break
+			}
 			if int(m.CurrentTab) < numTabs-1 {
 				m.CurrentTab++
 			}
