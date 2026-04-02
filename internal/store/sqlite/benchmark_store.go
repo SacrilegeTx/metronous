@@ -369,7 +369,7 @@ func (bs *BenchmarkStore) QueryModelSummaries(ctx context.Context) ([]store.Benc
 		totalSamples int
 		sumAccuracy  float64
 		sumP95       float64
-		totalCost    float64
+		lastCostUSD  float64
 		lastVerdict  store.VerdictType
 		lastRunAt    time.Time
 	}
@@ -396,15 +396,16 @@ func (bs *BenchmarkStore) QueryModelSummaries(ctx context.Context) ([]store.Benc
 			a.sumP95 += r.P95LatencyMs * float64(samples)
 		}
 		a.runs++
-		a.totalCost += r.TotalCostUSD
 
 		if r.RunAt.After(a.lastRunAt) {
 			if !isInsufficient {
 				a.lastRunAt = r.RunAt
 				a.lastVerdict = r.Verdict
+				a.lastCostUSD = r.TotalCostUSD
 			} else if a.lastVerdict == "" || a.lastVerdict == store.VerdictInsufficientData {
 				a.lastRunAt = r.RunAt
 				a.lastVerdict = r.Verdict
+				a.lastCostUSD = r.TotalCostUSD
 			}
 		}
 	}
@@ -422,7 +423,7 @@ func (bs *BenchmarkStore) QueryModelSummaries(ctx context.Context) ([]store.Benc
 			Runs:         a.runs,
 			AvgAccuracy:  avgAcc,
 			AvgP95Ms:     avgP95,
-			TotalCostUSD: a.totalCost,
+			TotalCostUSD: a.lastCostUSD,
 			LastVerdict:  a.lastVerdict,
 			LastRunAt:    a.lastRunAt,
 		})

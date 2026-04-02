@@ -308,7 +308,8 @@ type BenchmarkModelSummary struct {
 	// AvgP95Ms is the sample-weighted average P95 latency across qualifying runs.
 	AvgP95Ms float64
 
-	// TotalCostUSD is the sum of run costs across all benchmark runs for the model.
+	// TotalCostUSD is the cost from the run used for LastVerdict (i.e. last non-INSUFFICIENT_DATA verdict,
+	// falling back to INSUFFICIENT_DATA when nothing better exists).
 	TotalCostUSD float64
 
 	// LastVerdict is the most recent non-insufficient verdict, falling back to

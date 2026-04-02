@@ -263,8 +263,9 @@ func TestQueryModelSummaries(t *testing.T) {
 	if modelA.LastVerdict != store.VerdictKeep {
 		t.Errorf("model-a last verdict: got %s, want KEEP", modelA.LastVerdict)
 	}
-	if modelA.TotalCostUSD != 3.00 {
-		t.Errorf("model-a total cost: got %.2f, want 3.00", modelA.TotalCostUSD)
+	// TotalCostUSD is the cost from the last verdict run (LastVerdict), not the sum across runs.
+	if modelA.TotalCostUSD != 2.00 {
+		t.Errorf("model-a total cost: got %.2f, want 2.00", modelA.TotalCostUSD)
 	}
 }
 
