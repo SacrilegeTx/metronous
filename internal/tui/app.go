@@ -96,6 +96,11 @@ type AppModel struct {
 	config           ConfigModel
 	charts           ChartsModel
 
+	// showLanding controls whether we render the branding/landing screen.
+	// This is shown on app start so users can discover the 5 tabs.
+	showLanding   bool
+	landingCursor int
+
 	// StatusMsg is a transient message shown at the bottom of the screen.
 	StatusMsg string
 
@@ -141,6 +146,8 @@ func NewAppModel(es store.EventStore, bs store.BenchmarkStore, configPath string
 		charts:           NewChartsModel(es, bs),
 		CurrentVersion:   version,
 		needsClear:       true,
+		showLanding:      true,
+		landingCursor:    0,
 		UpdateAvailable:  false,
 		LatestVersion:    "",
 	}
@@ -274,6 +281,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 
+		case "esc", "escape":
+			// Allow leaving landing quickly.
+			m.showLanding = false
+			m.needsClear = true
+			return m, nil
+
 		case "u":
 			// Use absolute path to avoid PATH issues
 			exePath, err := os.Executable()
@@ -296,50 +309,93 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "1":
 			m.CurrentTab = TabTracking
+			m.landingCursor = 0
+			m.showLanding = false
 			m.needsClear = true
 			return m, nil
-
 		case "2":
 			m.CurrentTab = TabBenchmarkSummary
+			m.landingCursor = 1
+			m.showLanding = false
 			m.needsClear = true
 			return m, nil
-
 		case "3":
 			m.CurrentTab = TabBenchmarkDetailed
+			m.landingCursor = 2
+			m.showLanding = false
 			m.needsClear = true
 			return m, nil
-
 		case "4":
 			m.CurrentTab = TabCharts
+			m.landingCursor = 3
+			m.showLanding = false
 			m.needsClear = true
 			return m, nil
-
 		case "5":
 			m.CurrentTab = TabConfig
+			m.landingCursor = 4
+			m.showLanding = false
 			m.needsClear = true
 			return m, nil
 
 		case "left":
 			// Allow Charts tab to handle month navigation with arrow keys.
+			if m.showLanding {
+				// During landing, arrow keys behave like tab selection.
+				m.showLanding = false
+				m.needsClear = true
+			}
 			if m.CurrentTab == TabCharts {
 				break
 			}
 			if m.CurrentTab > 0 {
 				m.CurrentTab--
 			}
+			m.landingCursor = int(m.CurrentTab)
 			m.needsClear = true
 			return m, nil
 
 		case "right":
 			// Allow Charts tab to handle month navigation with arrow keys.
+			if m.showLanding {
+				m.showLanding = false
+				m.needsClear = true
+			}
 			if m.CurrentTab == TabCharts {
 				break
 			}
 			if int(m.CurrentTab) < numTabs-1 {
 				m.CurrentTab++
 			}
+			m.landingCursor = int(m.CurrentTab)
 			m.needsClear = true
 			return m, nil
+
+		case "up", "k":
+			if m.showLanding {
+				if m.landingCursor > 0 {
+					m.landingCursor--
+					m.CurrentTab = Tab(m.landingCursor)
+				}
+				m.needsClear = true
+				return m, nil
+			}
+		case "down", "j":
+			if m.showLanding {
+				if m.landingCursor < numTabs-1 {
+					m.landingCursor++
+					m.CurrentTab = Tab(m.landingCursor)
+				}
+				m.needsClear = true
+				return m, nil
+			}
+
+		case "enter":
+			if m.showLanding {
+				m.showLanding = false
+				m.needsClear = true
+				return m, nil
+			}
 
 		case "ctrl+s":
 			if m.CurrentTab == TabConfig {
@@ -406,22 +462,27 @@ func (m *AppModel) View() string {
 		m.needsClear = false
 	}
 
-	// Tab bar.
-	tabBar := m.renderTabBar()
-
 	// Content area.
+	var tabBar string
 	var content string
-	switch m.CurrentTab {
-	case TabTracking:
-		content = m.tracking.View()
-	case TabBenchmarkSummary:
-		content = m.benchmarkSummary.View()
-	case TabBenchmarkDetailed:
-		content = m.benchmark.View()
-	case TabConfig:
-		content = m.config.View()
-	case TabCharts:
-		content = m.charts.View()
+	if m.showLanding {
+		content = m.renderLanding()
+	} else {
+		// Tab bar.
+		tabBar = m.renderTabBar()
+		// Actual tab content.
+		switch m.CurrentTab {
+		case TabTracking:
+			content = m.tracking.View()
+		case TabBenchmarkSummary:
+			content = m.benchmarkSummary.View()
+		case TabBenchmarkDetailed:
+			content = m.benchmark.View()
+		case TabConfig:
+			content = m.config.View()
+		case TabCharts:
+			content = m.charts.View()
+		}
 	}
 
 	// Update banner
@@ -436,12 +497,94 @@ func (m *AppModel) View() string {
 	}
 
 	// Status bar - show "u: update" only if update is available
-	hint := statusBarStyle.Render("↑/↓: navigate  q: quit  1/2/3/4/5 or ←/→: switch tabs  ctrl+s: save  ctrl+r: reload  u: update")
-	if m.UpdateAvailable {
-		// Keep hint as-is; banner below will explain the specific latest version.
+	var hint string
+	if m.showLanding {
+		hint = statusBarStyle.Render("1/2/3/4/5 or ↑/↓: select tab  Enter: open  q: quit")
+	} else {
+		hint = statusBarStyle.Render("↑/↓: navigate  q: quit  1/2/3/4/5 or ←/→: switch tabs  ctrl+s: save  ctrl+r: reload  u: update")
 	}
 
+	if m.showLanding {
+		return prefix + fmt.Sprintf("%s\n%s\n%s", banner, content, hint)
+	}
 	return prefix + fmt.Sprintf("%s\n%s\n%s\n%s", tabBar, banner, content, hint)
+}
+
+func (m *AppModel) renderLanding() string {
+	cursorStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("44"))
+	mutedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	cyan := lipgloss.Color("44")
+	purple := lipgloss.Color("129")
+	orange := lipgloss.Color("214")
+	green := lipgloss.Color("82")
+
+	hex := func(c lipgloss.Color) string {
+		return lipgloss.NewStyle().Foreground(c).Render("⬡")
+	}
+
+	artLines := []string{
+		"     " + hex(green) + "───────────────" + hex(purple) + "    ",
+		"   /                \\     ",
+		"  " + hex(green) + "───────\\     " + hex(cyan) + "───────" + hex(cyan),
+		"  \\\t         \\    /",
+		"   " + hex(cyan) + "───────" + hex(cyan) + "───────" + hex(cyan),
+		"        \\          /",
+		"         " + hex(purple) + "────────" + hex(orange) + "",
+	}
+	// Make the art fit within the terminal width by joining and letting lipgloss
+	// handle wrapping. It remains fixed-width block text.
+	art := strings.Join(artLines, "\n")
+
+	title := lipgloss.NewStyle().Bold(true).Foreground(cyan).Render("METRONOUS")
+	sub := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("Local AI agent telemetry, benchmarking, and model calibration for OpenCode agents.")
+
+	// Menu.
+	entries := []struct {
+		idx  int
+		name string
+		tab  Tab
+	}{
+		{0, "Tracking", TabTracking},
+		{1, "Benchmark Summary", TabBenchmarkSummary},
+		{2, "Benchmark Detailed", TabBenchmarkDetailed},
+		{3, "Charts", TabCharts},
+		{4, "Config", TabConfig},
+	}
+
+	menuLines := make([]string, 0, len(entries))
+	for _, e := range entries {
+		bullet := "•"
+		style := mutedStyle
+		if e.idx == m.landingCursor {
+			bullet = "▶"
+			style = cursorStyle
+		}
+		label := fmt.Sprintf("%s %s", bullet, e.name)
+		menuLines = append(menuLines, style.Render(label))
+	}
+
+	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("Originally developed within the Gentle AI ecosystem.")
+
+	frame := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(0, 1)
+
+	// Use the frame width as a soft constraint.
+	content := strings.Join([]string{
+		art,
+		"",
+		title,
+		sub,
+		"",
+		"Tabs:",
+		strings.Join(menuLines, "\n"),
+		"",
+		footer,
+	}, "\n")
+
+	return frame.Render(content)
 }
 
 // renderTabBar returns the rendered tab bar string with the current version on the right.
