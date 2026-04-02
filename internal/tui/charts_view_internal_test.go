@@ -110,7 +110,7 @@ func TestChartsFetchRanksMonthlyCards(t *testing.T) {
 	m, _ = m.Update(data)
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 160, Height: 60})
 	view := m.View()
-	for _, want := range []string{"Cost chart", "Performance Top 3", "Responsibility Top 3"} {
+	for _, want := range []string{"Cost chart", "Performance Top 3 of the Month", "Responsibility Top 3 of the Month"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected %q in view, got %q", want, view)
 		}

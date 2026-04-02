@@ -1329,7 +1329,7 @@ func TestChartsPanelsAndNavigation(t *testing.T) {
 	}
 
 	view := m.View()
-	for _, want := range []string{"Cost chart", "Performance Top 3", "Responsibility Top 3"} {
+	for _, want := range []string{"Cost chart", "Performance Top 3 of the Month", "Responsibility Top 3 of the Month"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected %q in view, got: %q", want, view)
 		}
@@ -1361,7 +1361,7 @@ func TestChartsViewRendersTooltipBreakdown(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
 
 	view := m.View()
-	for _, want := range []string{"Cost chart", "Performance Top 3", "Responsibility Top 3"} {
+	for _, want := range []string{"Cost chart", "Performance Top 3 of the Month", "Responsibility Top 3 of the Month"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected %q in view, got: %q", want, view)
 		}

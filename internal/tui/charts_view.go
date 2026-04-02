@@ -496,18 +496,18 @@ func renderSummaryCards(width int, performance, responsibility []chartSummaryEnt
 	const gap = 4
 	minCardWidth := 34
 	if width < minCardWidth*2+gap {
-		left := renderSummaryCard("Performance Top 3", performance, width, false)
-		right := renderSummaryCard("Responsibility Top 3", responsibility, width, true)
+		left := renderSummaryCard("Performance Top 3 of the Month", performance, width, false)
+		right := renderSummaryCard("Responsibility Top 3 of the Month", responsibility, width, true)
 		return []string{left, "", right}
 	}
 	cardWidth := (width - gap) / 2
 	if cardWidth < minCardWidth {
-		left := renderSummaryCard("Performance Top 3", performance, width, false)
-		right := renderSummaryCard("Responsibility Top 3", responsibility, width, true)
+		left := renderSummaryCard("Performance Top 3 of the Month", performance, width, false)
+		right := renderSummaryCard("Responsibility Top 3 of the Month", responsibility, width, true)
 		return []string{left, "", right}
 	}
-	left := renderSummaryCard("Performance Top 3", performance, cardWidth, false)
-	right := renderSummaryCard("Responsibility Top 3", responsibility, cardWidth, true)
+	left := renderSummaryCard("Performance Top 3 of the Month", performance, cardWidth, false)
+	right := renderSummaryCard("Responsibility Top 3 of the Month", responsibility, cardWidth, true)
 	return strings.Split(lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), right), "\n")
 }
 
