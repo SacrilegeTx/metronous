@@ -57,6 +57,18 @@ const addWindowStartColumn = `ALTER TABLE benchmark_runs ADD COLUMN window_start
 // addWindowEndColumn migrates existing databases to add the window end timestamp (ms UTC).
 const addWindowEndColumn = `ALTER TABLE benchmark_runs ADD COLUMN window_end INTEGER NOT NULL DEFAULT 0`
 
+// addAvgPromptTokensColumn adds the avg_prompt_tokens metric column.
+const addAvgPromptTokensColumn = `ALTER TABLE benchmark_runs ADD COLUMN avg_prompt_tokens REAL NOT NULL DEFAULT 0.0`
+
+// addAvgCompletionTokensColumn adds the avg_completion_tokens metric column.
+const addAvgCompletionTokensColumn = `ALTER TABLE benchmark_runs ADD COLUMN avg_completion_tokens REAL NOT NULL DEFAULT 0.0`
+
+// addAvgTurnMsColumn adds the avg_turn_ms metric column (complete events only).
+const addAvgTurnMsColumn = `ALTER TABLE benchmark_runs ADD COLUMN avg_turn_ms REAL NOT NULL DEFAULT 0.0`
+
+// addP95TurnMsColumn adds the p95_turn_ms metric column (complete events only).
+const addP95TurnMsColumn = `ALTER TABLE benchmark_runs ADD COLUMN p95_turn_ms REAL NOT NULL DEFAULT 0.0`
+
 // BenchmarkStore is a SQLite-backed implementation of store.BenchmarkStore.
 type BenchmarkStore struct {
 	writeDB *sql.DB
@@ -130,6 +142,10 @@ func ApplyBenchmarkMigrations(ctx context.Context, db *sql.DB) error {
 		{addRunKindColumn, "run_kind"},
 		{addWindowStartColumn, "window_start"},
 		{addWindowEndColumn, "window_end"},
+		{addAvgPromptTokensColumn, "avg_prompt_tokens"},
+		{addAvgCompletionTokensColumn, "avg_completion_tokens"},
+		{addAvgTurnMsColumn, "avg_turn_ms"},
+		{addP95TurnMsColumn, "p95_turn_ms"},
 	}
 	for _, m := range migrations {
 		if err := applyAddColumnMigration(ctx, db, m.stmt, m.colName); err != nil {
@@ -155,13 +171,15 @@ func (bs *BenchmarkStore) SaveRun(ctx context.Context, run store.BenchmarkRun) e
 			accuracy, avg_latency_ms, p50_latency_ms, p95_latency_ms, p99_latency_ms,
 			tool_success_rate, roi_score, total_cost_usd, sample_size,
 			verdict, recommended_model, decision_reason, artifact_path, avg_quality_score,
-			run_kind, window_start, window_end
+			run_kind, window_start, window_end,
+			avg_prompt_tokens, avg_completion_tokens, avg_turn_ms, p95_turn_ms
 		) VALUES (
 			?, ?, ?, ?, ?,
 			?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?, ?,
-			?, ?, ?
+			?, ?, ?,
+			?, ?, ?, ?
 		)`
 
 	_, err := bs.writeDB.ExecContext(ctx, q,
@@ -187,6 +205,10 @@ func (bs *BenchmarkStore) SaveRun(ctx context.Context, run store.BenchmarkRun) e
 		string(run.RunKind),
 		run.WindowStart.UTC().UnixMilli(),
 		run.WindowEnd.UTC().UnixMilli(),
+		run.AvgPromptTokens,
+		run.AvgCompletionTokens,
+		run.AvgTurnMs,
+		run.P95TurnMs,
 	)
 	if err != nil {
 		return fmt.Errorf("save benchmark run: %w", err)
@@ -220,7 +242,8 @@ func (bs *BenchmarkStore) GetRuns(ctx context.Context, agentID string, limit int
 		accuracy, avg_latency_ms, p50_latency_ms, p95_latency_ms, p99_latency_ms,
 		tool_success_rate, roi_score, total_cost_usd, sample_size,
 		verdict, recommended_model, decision_reason, artifact_path, avg_quality_score,
-		run_kind, window_start, window_end
+		run_kind, window_start, window_end,
+		avg_prompt_tokens, avg_completion_tokens, avg_turn_ms, p95_turn_ms
 		FROM benchmark_runs`
 
 	if len(conditions) > 0 {
@@ -261,7 +284,8 @@ func (bs *BenchmarkStore) QueryRuns(ctx context.Context, query store.BenchmarkQu
 		accuracy, avg_latency_ms, p50_latency_ms, p95_latency_ms, p99_latency_ms,
 		tool_success_rate, roi_score, total_cost_usd, sample_size,
 		verdict, recommended_model, decision_reason, artifact_path, avg_quality_score,
-		run_kind, window_start, window_end
+		run_kind, window_start, window_end,
+		avg_prompt_tokens, avg_completion_tokens, avg_turn_ms, p95_turn_ms
 		FROM benchmark_runs`
 
 	if len(conditions) > 0 {
@@ -314,7 +338,8 @@ func (bs *BenchmarkStore) GetLatestRun(ctx context.Context, agentID string) (*st
 		accuracy, avg_latency_ms, p50_latency_ms, p95_latency_ms, p99_latency_ms,
 		tool_success_rate, roi_score, total_cost_usd, sample_size,
 		verdict, recommended_model, decision_reason, artifact_path, avg_quality_score,
-		run_kind, window_start, window_end
+		run_kind, window_start, window_end,
+		avg_prompt_tokens, avg_completion_tokens, avg_turn_ms, p95_turn_ms
 		FROM benchmark_runs
 		WHERE agent_id = ?
 		ORDER BY run_at DESC
@@ -503,6 +528,10 @@ func scanBenchmarkRuns(rows *sql.Rows) ([]store.BenchmarkRun, error) {
 			&runKind,
 			&windowStartMs,
 			&windowEndMs,
+			&run.AvgPromptTokens,
+			&run.AvgCompletionTokens,
+			&run.AvgTurnMs,
+			&run.P95TurnMs,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan benchmark run row: %w", err)
@@ -561,6 +590,10 @@ func scanBenchmarkRun(row rowScanner) (*store.BenchmarkRun, error) {
 		&runKind,
 		&windowStartMs,
 		&windowEndMs,
+		&run.AvgPromptTokens,
+		&run.AvgCompletionTokens,
+		&run.AvgTurnMs,
+		&run.P95TurnMs,
 	)
 	if err != nil {
 		return nil, err
@@ -640,7 +673,8 @@ func (bs *BenchmarkStore) QueryRunsInWindow(ctx context.Context, since, until ti
 		accuracy, avg_latency_ms, p50_latency_ms, p95_latency_ms, p99_latency_ms,
 		tool_success_rate, roi_score, total_cost_usd, sample_size,
 		verdict, recommended_model, decision_reason, artifact_path, avg_quality_score,
-		run_kind, window_start, window_end
+		run_kind, window_start, window_end,
+		avg_prompt_tokens, avg_completion_tokens, avg_turn_ms, p95_turn_ms
 		FROM benchmark_runs
 		WHERE run_at >= ? AND run_at < ?
 		ORDER BY run_at DESC`

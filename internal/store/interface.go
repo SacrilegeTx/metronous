@@ -307,7 +307,21 @@ type BenchmarkRun struct {
 	ArtifactPath string
 
 	// AvgQualityScore is the mean quality_score across all rated events in the window.
+	// Deprecated: quality_score has <11% coverage and duplicates accuracy. Kept for
+	// backward compatibility.
 	AvgQualityScore float64
+
+	// AvgPromptTokens is the mean number of prompt tokens per complete event.
+	AvgPromptTokens float64
+
+	// AvgCompletionTokens is the mean number of completion tokens per complete event.
+	AvgCompletionTokens float64
+
+	// AvgTurnMs is the mean turn duration in milliseconds (complete events only).
+	AvgTurnMs float64
+
+	// P95TurnMs is the 95th-percentile turn duration in milliseconds (complete events only).
+	P95TurnMs float64
 }
 
 // BenchmarkModelSummary aggregates benchmark metrics per model across all agents.

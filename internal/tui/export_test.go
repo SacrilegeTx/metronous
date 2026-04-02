@@ -97,7 +97,7 @@ func AggregateSummaryRowsForTest(runs []store.BenchmarkRun) []summaryRow {
 			Model:        k.model,
 			Runs:         a.runs,
 			AvgAccuracy:  avgAcc,
-			AvgP95Ms:     avgP95,
+			AvgTurnMs:    avgP95,
 			TotalCostUSD: a.lastCostUSD,
 			HealthScore:  health,
 			LastVerdict:  a.lastVerdict,

@@ -31,7 +31,7 @@ type summaryRow struct {
 	Model        string
 	Runs         int     // total benchmark runs
 	AvgAccuracy  float64 // weighted average accuracy
-	AvgP95Ms     float64 // weighted average P95 latency
+	AvgTurnMs    float64 // weighted average turn duration (complete events only)
 	TotalCostUSD float64 // cost from the run used for LastVerdict
 	HealthScore  float64 // composite 0-100 (higher is better)
 	LastVerdict  store.VerdictType
@@ -39,10 +39,10 @@ type summaryRow struct {
 }
 
 // summaryColWidths and summaryColNames describe the summary table columns.
-// Columns: Agent | Model | Runs | Accuracy | P95 | Total Cost | Health | Last Verdict
+// Columns: Agent | Model | Runs | Accuracy | Avg Turn | Last Cost | Health | Last Verdict
 var (
 	summaryColWidths = []int{18, 22, 5, 10, 12, 12, 8, 20}
-	summaryColNames  = []string{"Agent", "Model", "Runs", "Accuracy", "P95 Latency", "Last Cost", "Health", "Last Verdict"}
+	summaryColNames  = []string{"Agent", "Model", "Runs", "Accuracy", "Avg Turn", "Last Cost", "Health", "Last Verdict"}
 )
 
 // healthStyle returns a colour for the health score (0-100).
@@ -231,7 +231,13 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 					}
 					a.totalSamples += samples
 					a.sumAccuracy += r.Accuracy * float64(samples)
-					a.sumP95 += r.P95LatencyMs * float64(samples)
+					// Use AvgTurnMs (turn duration from complete events only).
+					// Fall back to AvgLatencyMs for runs recorded before the migration.
+					turnMs := r.AvgTurnMs
+					if turnMs <= 0 {
+						turnMs = r.AvgLatencyMs
+					}
+					a.sumP95 += turnMs * float64(samples)
 					// Accumulate ROI only when cost data is reliable (roi > 0).
 					if r.ROIScore > 0 {
 						a.sumROI += r.ROIScore * float64(samples)
@@ -253,7 +259,11 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 					}
 					// Always update fallback metrics from the most recent run.
 					a.lastAccuracy = r.Accuracy
-					a.lastP95 = r.P95LatencyMs
+					turnMs := r.AvgTurnMs
+					if turnMs <= 0 {
+						turnMs = r.AvgLatencyMs
+					}
+					a.lastP95 = turnMs
 					a.lastROI = r.ROIScore
 				}
 			}
@@ -288,7 +298,7 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 				Model:        k.model,
 				Runs:         a.runs,
 				AvgAccuracy:  avgAcc,
-				AvgP95Ms:     avgP95,
+				AvgTurnMs:    avgP95,
 				TotalCostUSD: a.lastCostUSD,
 				HealthScore:  health,
 				LastVerdict:  a.lastVerdict,
@@ -314,53 +324,46 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 // computeHealthScore returns a 0-100 composite score.
 //
 // Formula:
-//   - Accuracy:  50 pts  (accuracy * 50)
-//   - Latency:   20 pts  (0 if p95 not measured; 20*(1-p95/10000) otherwise)
-//   - Verdict:   20 pts  (KEEP=20, SWITCH=5, URGENT_SWITCH=0, INSUFFICIENT=8, other=5)
-//   - ROI:       10 pts  (5=neutral when no cost data; scaled to 10 by minROIScore reference)
+//   - Accuracy:  60 pts  (accuracy * 60) — primary signal
+//   - Verdict:   25 pts  (KEEP=25, SWITCH=5, URGENT_SWITCH=0, INSUFFICIENT=10, other=5)
+//   - ROI:       15 pts  (7=neutral when no cost data; scaled 0-15 by minROIScore reference)
 //
-// roiScore is the raw ROI value (tool_success_rate / cost_per_session); 0 means
-// no cost data available (free model or unreliable billing).
+// Latency is intentionally excluded from HealthScore because the available
+// p95_latency_ms data is noisy (includes cumulative session time, not per-call
+// latency). It will be reintroduced once clean turn-level latency data is captured.
+//
+// roiScore is accuracy / cost_per_session; 0 means no cost data available.
 // minROIScore is the threshold from config used as the reference point for scaling.
-func computeHealthScore(accuracy, p95Ms float64, verdict store.VerdictType, roiScore, minROIScore float64) float64 {
-	// Accuracy: 0-50 pts.
-	accPart := accuracy * 50
+func computeHealthScore(accuracy, _ float64, verdict store.VerdictType, roiScore, minROIScore float64) float64 {
+	// Accuracy: 0-60 pts — the most reliable signal we have.
+	accPart := accuracy * 60
 
-	// Latency: 0-20 pts.
-	// p95=0 means not measured — award neutral 10pts instead of full 20.
-	var latPart float64
-	if p95Ms <= 0 {
-		latPart = 10
-	} else {
-		latPart = 20 * max64(0, 1-p95Ms/10000)
-	}
-
-	// Verdict: 0-20 pts.
+	// Verdict: 0-25 pts.
 	var verdictPart float64
 	switch verdict {
 	case store.VerdictKeep:
-		verdictPart = 20
+		verdictPart = 25
 	case store.VerdictSwitch:
 		verdictPart = 5
 	case store.VerdictUrgentSwitch:
 		verdictPart = 0
 	case store.VerdictInsufficientData:
-		verdictPart = 8
+		verdictPart = 10
 	default:
 		verdictPart = 5
 	}
 
-	// ROI: 0-10 pts.
-	// 0 cost data (free model or no billing) → neutral 5pts.
-	// Paid model with roi data → scaled 0-10 using minROIScore as reference.
+	// ROI: 0-15 pts.
+	// No cost data (free model or no billing) → neutral 7pts.
+	// Paid model with roi → scaled 0-15 using minROIScore as reference.
 	var roiPart float64
 	if roiScore <= 0 || minROIScore <= 0 {
-		roiPart = 5
+		roiPart = 7
 	} else {
-		roiPart = 10 * min64(1, roiScore/minROIScore)
+		roiPart = 15 * min64(1, roiScore/minROIScore)
 	}
 
-	score := accPart + latPart + verdictPart + roiPart
+	score := accPart + verdictPart + roiPart
 	if score > 100 {
 		score = 100
 	}
@@ -487,7 +490,7 @@ func (m *BenchmarkSummaryModel) View() string {
 		writeDetailField(&sb, "Model", r.Model)
 		writeDetailField(&sb, "Runs", fmt.Sprintf("%d benchmark run(s)", r.Runs))
 		writeDetailField(&sb, "Accuracy", fmt.Sprintf("%.1f%%  (weighted avg)", r.AvgAccuracy*100))
-		writeDetailField(&sb, "P95", fmt.Sprintf("%.0fms  (weighted avg)", r.AvgP95Ms))
+		writeDetailField(&sb, "Avg Turn", fmt.Sprintf("%.0fms  (weighted avg)", r.AvgTurnMs))
 		writeDetailField(&sb, "Cost", fmt.Sprintf("$%.4f  (from last verdict run)", r.TotalCostUSD))
 		writeDetailField(&sb, "Health", fmt.Sprintf("%.0f / 100", r.HealthScore))
 		writeDetailField(&sb, "Verdict", string(r.LastVerdict))
@@ -511,7 +514,7 @@ func (m *BenchmarkSummaryModel) View() string {
 func formatSummaryRow(r summaryRow) []string {
 	runs := fmt.Sprintf("%d", r.Runs)
 	accuracy := fmt.Sprintf("%.1f%%", r.AvgAccuracy*100)
-	p95 := fmt.Sprintf("%.0fms", r.AvgP95Ms)
+	p95 := fmt.Sprintf("%.0fms", r.AvgTurnMs)
 	cost := fmt.Sprintf("$%.4f", r.TotalCostUSD)
 	health := fmt.Sprintf("%.0f", r.HealthScore)
 	verdict := string(r.LastVerdict)
