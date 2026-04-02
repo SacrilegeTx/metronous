@@ -111,13 +111,6 @@ func (m ChartsModel) View() string {
 
 	sub := fmt.Sprintf("Daily cost by model (stacked) — %s  (use ←/→)", m.monthStart.Format("January 2006"))
 
-	barWidth := 30
-	if m.width >= 100 {
-		barWidth = 45
-	} else if m.width <= 70 {
-		barWidth = 20
-	}
-
 	palette := []lipgloss.Color{
 		lipgloss.Color("82"),  // green
 		lipgloss.Color("226"), // yellow/orange
@@ -208,13 +201,6 @@ func (m ChartsModel) View() string {
 		}
 	}
 
-	barBlock := func(color lipgloss.Color, n int) string {
-		if n <= 0 {
-			return ""
-		}
-		return lipgloss.NewStyle().Foreground(color).Render(strings.Repeat("█", n))
-	}
-
 	lines := []string{}
 	lines = append(lines, title+"\n"+sub)
 	if m.loading {
@@ -225,46 +211,141 @@ func (m ChartsModel) View() string {
 		lines = append(lines, lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("Error: "+m.err.Error()))
 	}
 
-	// Graph rows.
-	for _, d := range days {
-		dayKey := d.Format("2006-01-02")
-		rowCosts := costs[dayKey]
+	// Vertical stacked bar chart (one column per day).
+	maxCols := m.width - 2
+	if maxCols <= 0 {
+		maxCols = 31
+	}
+	if maxCols < 6 {
+		maxCols = 6
+	}
+	chunkSize := maxCols
+	if chunkSize > len(days) {
+		chunkSize = len(days)
+	}
 
-		// totalDay = sum of segment costs (including Other, if present)
-		totalDay := 0.0
+	barHeight := 10
+	if m.height > 0 {
+		barHeight = m.height - 10
+		if barHeight < 6 {
+			barHeight = 6
+		}
+		if barHeight > 18 {
+			barHeight = 18
+		}
+	}
+
+	blocks := make(map[string]string)
+	for _, model := range segmentModels {
+		blocks[model] = lipgloss.NewStyle().Foreground(colors[model]).Render("█")
+	}
+
+	dayTotals := make([]float64, 0, len(days))
+	for _, d := range days {
+		rowCosts := costs[d.Format("2006-01-02")]
+		total := 0.0
 		for _, model := range segmentModels {
 			if rowCosts != nil {
-				totalDay += rowCosts[model]
+				total += rowCosts[model]
 			}
 		}
+		dayTotals = append(dayTotals, total)
+	}
 
-		dayLabel := d.Format("02")
-		bar := ""
-		if totalDay > 0 && len(segmentModels) > 0 {
-			remaining := barWidth
-			for i, model := range segmentModels {
-				cost := 0.0
+	if len(days) == 0 {
+		lines = append(lines, "No data")
+		return strings.Join(lines, "\n")
+	}
+
+	for chunkStart := 0; chunkStart < len(days); chunkStart += chunkSize {
+		chunkEnd := chunkStart + chunkSize
+		if chunkEnd > len(days) {
+			chunkEnd = len(days)
+		}
+		chunkDays := days[chunkStart:chunkEnd]
+		chunkTotals := dayTotals[chunkStart:chunkEnd]
+
+		heightsPerDay := make([][]int, len(chunkDays))
+		for i, d := range chunkDays {
+			rowCosts := costs[d.Format("2006-01-02")]
+			total := chunkTotals[i]
+			if total <= 0 || len(segmentModels) == 0 {
+				heightsPerDay[i] = make([]int, len(segmentModels))
+				continue
+			}
+
+			floors := make([]int, len(segmentModels))
+			fracs := make([]float64, len(segmentModels))
+			sumFloors := 0
+			for j, model := range segmentModels {
+				c := 0.0
 				if rowCosts != nil {
-					cost = rowCosts[model]
+					c = rowCosts[model]
 				}
-				segLen := 0
-				if i < len(segmentModels)-1 {
-					segLen = int((float64(barWidth) * cost) / totalDay)
-					if segLen < 0 {
-						segLen = 0
-					}
-					if segLen > remaining {
-						segLen = remaining
-					}
-					remaining -= segLen
-				} else {
-					segLen = remaining
-				}
-				bar += barBlock(colors[model], segLen)
+				e := (float64(barHeight) * c) / total
+				f := int(e)
+				floors[j] = f
+				fracs[j] = e - float64(f)
+				sumFloors += f
 			}
+
+			rem := barHeight - sumFloors
+			heights := make([]int, len(segmentModels))
+			copy(heights, floors)
+			if rem > 0 {
+				idx := make([]int, len(segmentModels))
+				for k := range idx {
+					idx[k] = k
+				}
+				sort.SliceStable(idx, func(a, b int) bool {
+					return fracs[idx[a]] > fracs[idx[b]]
+				})
+				for k := 0; k < rem && k < len(idx); k++ {
+					heights[idx[k]]++
+				}
+			}
+			heightsPerDay[i] = heights
 		}
 
-		lines = append(lines, fmt.Sprintf("%s |%s", dayLabel, bar))
+		// Render bar area.
+		for y := barHeight; y >= 1; y-- {
+			var row strings.Builder
+			for i := range chunkDays {
+				total := chunkTotals[i]
+				if total <= 0 || len(segmentModels) == 0 {
+					row.WriteByte(' ')
+					continue
+				}
+
+				seg := -1
+				cum := 0
+				heights := heightsPerDay[i]
+				for j := range segmentModels {
+					cum += heights[j]
+					if y <= cum {
+						seg = j
+						break
+					}
+				}
+				if seg < 0 {
+					row.WriteByte(' ')
+					continue
+				}
+				row.WriteString(blocks[segmentModels[seg]])
+			}
+			lines = append(lines, row.String())
+		}
+
+		// X-axis labels (last digit) to keep width tight.
+		var xlabels strings.Builder
+		for _, d := range chunkDays {
+			xlabels.WriteString(fmt.Sprintf("%d", d.Day()%10))
+		}
+		lines = append(lines, xlabels.String())
+
+		if chunkEnd < len(days) {
+			lines = append(lines, "")
+		}
 	}
 
 	return strings.Join(lines, "\n")
