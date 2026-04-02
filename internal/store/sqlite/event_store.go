@@ -136,20 +136,6 @@ func (es *EventStore) InsertEvent(ctx context.Context, event store.Event) (strin
 	return event.ID, nil
 }
 
-// upsertAgentSummary maintains the materialized summary cache for an agent.
-// Deprecated: Use upsertAgentSummaryTx for transactional consistency.
-func (es *EventStore) upsertAgentSummary(ctx context.Context, event store.Event) error {
-	tx, err := es.writeDB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	if err := es.upsertAgentSummaryTx(ctx, tx, event); err != nil {
-		_ = tx.Rollback()
-		return err
-	}
-	return tx.Commit()
-}
-
 // upsertAgentSummaryTx maintains the materialized summary cache for an agent using the provided transaction.
 func (es *EventStore) upsertAgentSummaryTx(ctx context.Context, tx *sql.Tx, event store.Event) error {
 	// The running average formula uses the OLD total_events value (before +1).
@@ -169,11 +155,42 @@ func (es *EventStore) upsertAgentSummaryTx(ctx context.Context, tx *sql.Tx, even
 	`
 
 	// Only update cost from complete events — cost_usd is cumulative per session,
-	// so only the final complete event carries the true session total.
-	// Accumulating cost from every tool_call would massively inflate the summary.
-	costUSD := 0.0
+	// so we maintain total_cost_usd as the sum of MAX(cost_usd) per session.
+	// When the same session emits multiple complete events, cost_usd is
+	// cumulative, so we only add the incremental increase in that max.
+	costDeltaUSD := 0.0
 	if event.EventType == "complete" && event.CostUSD != nil {
-		costUSD = *event.CostUSD
+		// newMax includes the just-inserted event.
+		const qNew = `
+			SELECT COALESCE(MAX(cost_usd), 0)
+			FROM events
+			WHERE session_id = ?
+				AND event_type = 'complete'
+				AND cost_usd IS NOT NULL
+		`
+		var newMax float64
+		if err := tx.QueryRowContext(ctx, qNew, event.SessionID).Scan(&newMax); err != nil {
+			return fmt.Errorf("compute new max cost_usd: %w", err)
+		}
+
+		// oldMax excludes the just-inserted event.
+		const qOld = `
+			SELECT COALESCE(MAX(cost_usd), 0)
+			FROM events
+			WHERE session_id = ?
+				AND event_type = 'complete'
+				AND cost_usd IS NOT NULL
+				AND id <> ?
+		`
+		var oldMax float64
+		if err := tx.QueryRowContext(ctx, qOld, event.SessionID, event.ID).Scan(&oldMax); err != nil {
+			return fmt.Errorf("compute old max cost_usd: %w", err)
+		}
+
+		delta := newMax - oldMax
+		if delta > 0 {
+			costDeltaUSD = delta
+		}
 	}
 	qualityScore := 0.0
 	if event.QualityScore != nil {
@@ -184,7 +201,7 @@ func (es *EventStore) upsertAgentSummaryTx(ctx context.Context, tx *sql.Tx, even
 	_, err := tx.ExecContext(ctx, q,
 		event.AgentID,
 		event.Timestamp.UTC().UnixMilli(),
-		costUSD,
+		costDeltaUSD,
 		qualityScore,
 		now,
 	)
@@ -432,6 +449,58 @@ func (es *EventStore) GetAgentSummary(ctx context.Context, agentID string) (stor
 
 	summary.LastEventTs = time.UnixMilli(lastEventMs).UTC()
 	return summary, nil
+}
+
+// QueryDailyCostByModel aggregates total cost (USD) per model per local-day
+// for events where event_type='complete'.
+//
+// The window is treated as [since, until) in UTC instants, while the resulting
+// Day buckets are computed in the database using SQLite localtime.
+func (es *EventStore) QueryDailyCostByModel(ctx context.Context, since, until time.Time) ([]store.DailyCostByModelRow, error) {
+	const q = `
+		SELECT
+			strftime('%Y-%m-%d', datetime(timestamp/1000, 'unixepoch', 'localtime')) AS day,
+			model,
+			COALESCE(SUM(cost_usd), 0) AS total_cost_usd
+		FROM events
+		WHERE event_type = 'complete'
+			AND timestamp >= ?
+			AND timestamp < ?
+			AND cost_usd IS NOT NULL
+		GROUP BY day, model
+		ORDER BY day ASC, model ASC
+	`
+
+	rows, err := es.readDB.QueryContext(ctx, q, since.UTC().UnixMilli(), until.UTC().UnixMilli())
+	if err != nil {
+		return nil, fmt.Errorf("query daily cost by model: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.DailyCostByModelRow
+	for rows.Next() {
+		var (
+			dayStr string
+			model  string
+			total  float64
+		)
+		if err := rows.Scan(&dayStr, &model, &total); err != nil {
+			return nil, fmt.Errorf("scan daily cost row: %w", err)
+		}
+		d, err := time.ParseInLocation("2006-01-02", dayStr, time.Local)
+		if err != nil {
+			return nil, fmt.Errorf("parse day %q: %w", dayStr, err)
+		}
+		out = append(out, store.DailyCostByModelRow{
+			Day:          d,
+			Model:        model,
+			TotalCostUSD: total,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate daily cost rows: %w", err)
+	}
+	return out, nil
 }
 
 // Checkpoint performs a WAL checkpoint to prevent unbounded WAL file growth.

@@ -186,6 +186,10 @@ func (m *mockEventStore) GetAgentEvents(ctx context.Context, _ string, _ time.Ti
 func (m *mockEventStore) GetAgentSummary(ctx context.Context, _ string) (store.AgentSummary, error) {
 	return store.AgentSummary{}, nil
 }
+
+func (m *mockEventStore) QueryDailyCostByModel(ctx context.Context, _, _ time.Time) ([]store.DailyCostByModelRow, error) {
+	return nil, nil
+}
 func (m *mockEventStore) Close() error { return nil }
 
 // TestBenchmarkRunFieldMapping verifies BenchmarkRun struct has all required fields.
@@ -275,6 +279,9 @@ func (m *mockBenchmarkStore) GetVerdictTrend(ctx context.Context, agentID string
 	return nil, nil
 }
 func (m *mockBenchmarkStore) ListRunCycles(ctx context.Context, loc *time.Location, limit, offset int) ([]time.Time, error) {
+	return nil, nil
+}
+func (m *mockBenchmarkStore) QueryModelSummaries(ctx context.Context) ([]store.BenchmarkModelSummary, error) {
 	return nil, nil
 }
 func (m *mockBenchmarkStore) QueryRunsInWindow(ctx context.Context, since, until time.Time) ([]store.BenchmarkRun, error) {

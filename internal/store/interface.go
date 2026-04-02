@@ -147,6 +147,14 @@ type SessionQuery struct {
 	Offset int
 }
 
+// DailyCostByModelRow represents aggregated daily spend per model
+// for events with event_type='complete'.
+type DailyCostByModelRow struct {
+	Day          time.Time
+	Model        string
+	TotalCostUSD float64
+}
+
 // EventStore is the primary storage interface for telemetry events.
 // Implementations must be safe for concurrent reads, but writes should
 // be funneled through the EventQueue (single-writer channel pattern).
@@ -176,6 +184,12 @@ type EventStore interface {
 
 	// GetAgentSummary returns aggregated metrics for the specified agent.
 	GetAgentSummary(ctx context.Context, agentID string) (AgentSummary, error)
+
+	// QueryDailyCostByModel aggregates total cost (USD) per model per local-day
+	// for events in the supplied time window.
+	// Implementations must treat the window as [since, until) and only consider
+	// events where event_type='complete'.
+	QueryDailyCostByModel(ctx context.Context, since, until time.Time) ([]DailyCostByModelRow, error)
 
 	// Close releases all resources held by the store.
 	Close() error
@@ -279,6 +293,33 @@ type BenchmarkRun struct {
 	AvgQualityScore float64
 }
 
+// BenchmarkModelSummary aggregates benchmark metrics per model across all agents.
+// It is used by the Charts tab to rank models for the different visualization modes.
+type BenchmarkModelSummary struct {
+	// Model is the LLM model identifier.
+	Model string
+
+	// Runs is the number of benchmark runs included in the summary.
+	Runs int
+
+	// AvgAccuracy is the sample-weighted average accuracy across qualifying runs.
+	AvgAccuracy float64
+
+	// AvgP95Ms is the sample-weighted average P95 latency across qualifying runs.
+	AvgP95Ms float64
+
+	// TotalCostUSD is the cost from the run used for LastVerdict (i.e. last non-INSUFFICIENT_DATA verdict,
+	// falling back to INSUFFICIENT_DATA when nothing better exists).
+	TotalCostUSD float64
+
+	// LastVerdict is the most recent non-insufficient verdict, falling back to
+	// INSUFFICIENT_DATA when no better run exists.
+	LastVerdict VerdictType
+
+	// LastRunAt is the timestamp of the run that produced LastVerdict.
+	LastRunAt time.Time
+}
+
 // BenchmarkQuery defines filter criteria for querying benchmark runs.
 type BenchmarkQuery struct {
 	// AgentID filters runs by agent (empty = all agents).
@@ -328,6 +369,11 @@ type BenchmarkStore interface {
 	// one run_at value in the database.
 	// limit=0 returns all cycles; offset skips the first N cycles for pagination.
 	ListRunCycles(ctx context.Context, loc *time.Location, limit, offset int) ([]time.Time, error)
+
+	// QueryModelSummaries returns one aggregated row per model across all benchmark runs.
+	// Implementations should aggregate across all agents and use sample-weighted averages
+	// for accuracy/latency metrics.
+	QueryModelSummaries(ctx context.Context) ([]BenchmarkModelSummary, error)
 
 	// QueryRunsInWindow returns all benchmark runs whose run_at falls within
 	// [since, until) (inclusive start, exclusive end), ordered by run_at DESC.

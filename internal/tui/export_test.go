@@ -153,6 +153,36 @@ func GetBenchmarkRunErr(m BenchmarkModel) error {
 	return m.runErr
 }
 
+// GetChartsMonthStart returns the active month for tests.
+func GetChartsMonthStart(m ChartsModel) time.Time {
+	return m.monthStart
+}
+
+// GetChartsCursor returns the current day cursor for tests.
+func GetChartsCursor(m ChartsModel) int {
+	return m.cursorDayIndex
+}
+
+// GetChartsSelectedModels returns the currently selected models for tests.
+func GetChartsSelectedModels(m ChartsModel) []string {
+	return m.selectedModels
+}
+
+// GetChartsCostSelectedModels returns the cost panel selection for tests.
+func GetChartsCostSelectedModels(m ChartsModel) []string {
+	return m.selectedModels
+}
+
+// GetChartsPerformanceSelectedModels returns the performance panel selection for tests.
+func GetChartsPerformanceSelectedModels(m ChartsModel) []string {
+	return m.performanceSelectedModels
+}
+
+// GetChartsResponsibilitySelectedModels returns the responsibility panel selection for tests.
+func GetChartsResponsibilitySelectedModels(m ChartsModel) []string {
+	return m.responsibilitySelectedModels
+}
+
 // NewBenchmarkModelWithRunner creates a BenchmarkModel with an explicit runner for tests.
 func NewBenchmarkModelWithRunner(bs store.BenchmarkStore, r IntraweekRunner) BenchmarkModel {
 	return NewBenchmarkModel(bs, "", "", r)

@@ -70,11 +70,18 @@ func TestAppTabSwitchingByNumber(t *testing.T) {
 		t.Errorf("expected TabBenchmarkDetailed after pressing 3, got %d", m.CurrentTab)
 	}
 
-	// 4 → Config
+	// 4 → Charts
 	updated, _ = sendKey(m, "4")
 	m = updated.(*tui.AppModel)
+	if m.CurrentTab != tui.TabCharts {
+		t.Errorf("expected TabCharts after pressing 4, got %d", m.CurrentTab)
+	}
+
+	// 5 → Config
+	updated, _ = sendKey(m, "5")
+	m = updated.(*tui.AppModel)
 	if m.CurrentTab != tui.TabConfig {
-		t.Errorf("expected TabConfig after pressing 4, got %d", m.CurrentTab)
+		t.Errorf("expected TabConfig after pressing 5, got %d", m.CurrentTab)
 	}
 
 	// Back to 1 → Tracking
@@ -87,9 +94,12 @@ func TestAppTabSwitchingByNumber(t *testing.T) {
 
 func TestAppTabSwitchingByArrowKeys(t *testing.T) {
 	m := newTestApp(t)
+	// Dismiss the landing screen so arrow keys switch tabs normally.
+	updated, _ := sendKey(m, "1")
+	m = updated.(*tui.AppModel)
 
 	// right → TabBenchmarkSummary
-	updated, _ := sendSpecialKey(m, tea.KeyRight)
+	updated, _ = sendSpecialKey(m, tea.KeyRight)
 	m = updated.(*tui.AppModel)
 	if m.CurrentTab != tui.TabBenchmarkSummary {
 		t.Errorf("expected TabBenchmarkSummary after right arrow, got %d", m.CurrentTab)
@@ -102,25 +112,55 @@ func TestAppTabSwitchingByArrowKeys(t *testing.T) {
 		t.Errorf("expected TabBenchmarkDetailed after right arrow, got %d", m.CurrentTab)
 	}
 
+	// right → TabCharts
+	updated, _ = sendSpecialKey(m, tea.KeyRight)
+	m = updated.(*tui.AppModel)
+	if m.CurrentTab != tui.TabCharts {
+		t.Errorf("expected TabCharts after right arrow, got %d", m.CurrentTab)
+	}
+
 	// right → TabConfig
 	updated, _ = sendSpecialKey(m, tea.KeyRight)
 	m = updated.(*tui.AppModel)
-	if m.CurrentTab != tui.TabConfig {
-		t.Errorf("expected TabConfig after right arrow, got %d", m.CurrentTab)
+	// When on Charts, left/right should not switch tabs.
+	if m.CurrentTab != tui.TabCharts {
+		t.Errorf("expected TabCharts after right arrow, got %d", m.CurrentTab)
+	}
+
+	// left → TabCharts
+	updated, _ = sendSpecialKey(m, tea.KeyLeft)
+	m = updated.(*tui.AppModel)
+	if m.CurrentTab != tui.TabCharts {
+		t.Errorf("expected TabCharts after left arrow, got %d", m.CurrentTab)
 	}
 
 	// left → TabBenchmarkDetailed
 	updated, _ = sendSpecialKey(m, tea.KeyLeft)
 	m = updated.(*tui.AppModel)
-	if m.CurrentTab != tui.TabBenchmarkDetailed {
-		t.Errorf("expected TabBenchmarkDetailed after left arrow, got %d", m.CurrentTab)
+	// When on Charts, left/right should not switch tabs.
+	if m.CurrentTab != tui.TabCharts {
+		t.Errorf("expected TabCharts after left arrow, got %d", m.CurrentTab)
 	}
+}
 
-	// left → TabBenchmarkSummary
-	updated, _ = sendSpecialKey(m, tea.KeyLeft)
+func TestEscReturnsToLanding(t *testing.T) {
+	m := newTestApp(t)
+	// Ensure View() has a non-zero width.
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = updated.(*tui.AppModel)
-	if m.CurrentTab != tui.TabBenchmarkSummary {
-		t.Errorf("expected TabBenchmarkSummary after left arrow, got %d", m.CurrentTab)
+	// Open a tab from the landing.
+	updated, _ = sendKey(m, "4")
+	m = updated.(*tui.AppModel)
+	view := m.View()
+	if strings.Contains(view, "METRONOUS") {
+		t.Fatalf("expected landing to be dismissed after selecting a tab")
+	}
+	// ESC should bring the user back to the landing.
+	updated, _ = sendSpecialKey(m, tea.KeyEsc)
+	m = updated.(*tui.AppModel)
+	view = m.View()
+	if !strings.Contains(view, "METRONOUS") {
+		t.Fatalf("expected METRONOUS landing after ESC, got: %q", view)
 	}
 }
 
@@ -134,8 +174,8 @@ func TestAppArrowKeyDoesNotWrapBeyondBounds(t *testing.T) {
 		t.Errorf("expected tab to stay at TabTracking, got %d", m.CurrentTab)
 	}
 
-	// Jump to last tab (4 = Config) then press right → stays at TabConfig.
-	updated, _ = sendKey(m, "4")
+	// Jump to last tab (5 = Config) then press right → stays at TabConfig.
+	updated, _ = sendKey(m, "5")
 	m = updated.(*tui.AppModel)
 	updated, _ = sendSpecialKey(m, tea.KeyRight)
 	m = updated.(*tui.AppModel)
@@ -1157,8 +1197,8 @@ func TestTrackingRefreshWithNewSessionsDoesNotClosePopup(t *testing.T) {
 
 // ----- Benchmark Summary tab tests -------------------------------------------
 
-// TestAppTabSwitchingFourTabs verifies all four tabs are reachable via 1/2/3/4.
-func TestAppTabSwitchingFourTabs(t *testing.T) {
+// TestAppTabSwitchingFiveTabs verifies all tabs are reachable via 1/2/3/4/5.
+func TestAppTabSwitchingFiveTabs(t *testing.T) {
 	m := newTestApp(t)
 
 	cases := []struct {
@@ -1169,7 +1209,8 @@ func TestAppTabSwitchingFourTabs(t *testing.T) {
 		{"1", tui.TabTracking, "TabTracking"},
 		{"2", tui.TabBenchmarkSummary, "TabBenchmarkSummary"},
 		{"3", tui.TabBenchmarkDetailed, "TabBenchmarkDetailed"},
-		{"4", tui.TabConfig, "TabConfig"},
+		{"4", tui.TabCharts, "TabCharts"},
+		{"5", tui.TabConfig, "TabConfig"},
 	}
 	for _, tc := range cases {
 		updated, _ := sendKey(m, tc.key)
@@ -1267,6 +1308,98 @@ func TestBenchmarkSummaryViewRendersAgentRows(t *testing.T) {
 	if !strings.Contains(view, "sdd-apply") {
 		t.Errorf("expected 'sdd-apply' in view, got: %q", view)
 	}
+}
+
+// TestChartsPanelsAndNavigation verifies the Charts tab renders the cost chart
+// plus summary cards and keeps month/day navigation working.
+func TestChartsPanelsAndNavigation(t *testing.T) {
+	monthStart := time.Date(time.Now().Year(), time.Now().Month(), 1, 0, 0, 0, 0, time.Local)
+	m := tui.NewChartsModel(nil, nil)
+	m, _ = m.Update(tui.ChartsDataMsg{
+		MonthStart:                   monthStart,
+		Rows:                         []store.DailyCostByModelRow{{Day: monthStart, Model: "alpha", TotalCostUSD: 1}},
+		SelectedModels:               []string{"alpha"},
+		CostSelectedModels:           []string{"alpha"},
+		PerformanceSelectedModels:    []string{"beta", "gamma", "alpha"},
+		ResponsibilitySelectedModels: []string{"alpha"},
+	})
+
+	if got := tui.GetChartsCostSelectedModels(m); len(got) != 1 || got[0] != "alpha" {
+		t.Fatalf("expected cost selection to be alpha, got %v", got)
+	}
+
+	if got := tui.GetChartsPerformanceSelectedModels(m); len(got) != 3 || got[0] != "beta" {
+		t.Fatalf("expected performance selection to be populated, got %v", got)
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	if tui.GetChartsCursor(m) != 1 {
+		t.Fatalf("expected cursor=1 after l, got %d", tui.GetChartsCursor(m))
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	if tui.GetChartsCursor(m) != 0 {
+		t.Fatalf("expected cursor=0 after k, got %d", tui.GetChartsCursor(m))
+	}
+
+	originalMonth := tui.GetChartsMonthStart(m)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if !tui.GetChartsMonthStart(m).Before(originalMonth) {
+		t.Fatalf("expected month to move backward with left arrow")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if !sameMonthForTest(tui.GetChartsMonthStart(m), originalMonth) {
+		t.Fatalf("expected month to return after right arrow")
+	}
+
+	view := m.View()
+	for _, want := range []string{"Cost chart", "Performance Top 3 of the Month", "Responsibility Top 3 of the Month"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected %q in view, got: %q", want, view)
+		}
+	}
+}
+
+// TestChartsViewRendersTooltipBreakdown verifies the chart view includes the
+// selected day breakdown while leaving the summary cards in place.
+func TestChartsViewRendersTooltipBreakdown(t *testing.T) {
+	monthStart := time.Date(time.Now().Year(), time.Now().Month(), 1, 0, 0, 0, 0, time.Local)
+	day1 := monthStart
+	day2 := monthStart.AddDate(0, 0, 1)
+
+	m := tui.NewChartsModel(nil, nil)
+	m, _ = m.Update(tui.ChartsDataMsg{
+		MonthStart: monthStart,
+		Rows: []store.DailyCostByModelRow{
+			{Day: day1, Model: "alpha", TotalCostUSD: 1},
+			{Day: day1, Model: "beta", TotalCostUSD: 2},
+			{Day: day1, Model: "gamma", TotalCostUSD: 3},
+			{Day: day2, Model: "alpha", TotalCostUSD: 4},
+			{Day: day2, Model: "beta", TotalCostUSD: 1},
+		},
+		SelectedModels:               []string{"gamma", "beta", "alpha"},
+		CostSelectedModels:           []string{"gamma", "beta", "alpha"},
+		PerformanceSelectedModels:    []string{"beta", "gamma", "alpha"},
+		ResponsibilitySelectedModels: []string{"gamma", "beta", "alpha"},
+	})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+
+	view := m.View()
+	for _, want := range []string{"Cost chart", "Performance Top 3 of the Month", "Responsibility Top 3 of the Month"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expected %q in view, got: %q", want, view)
+		}
+	}
+	if !strings.Contains(view, "Tooltip: "+day2.Format("Jan 02")) {
+		t.Fatalf("expected tooltip for selected day, got: %q", view)
+	}
+	if !strings.Contains(view, "alpha: $4.000") || !strings.Contains(view, "beta: $1.000") {
+		t.Fatalf("expected tooltip breakdown in view, got: %q", view)
+	}
+}
+
+func sameMonthForTest(a, b time.Time) bool {
+	return a.Year() == b.Year() && a.Month() == b.Month()
 }
 
 // min is a small helper for test output truncation.

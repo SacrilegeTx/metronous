@@ -534,13 +534,13 @@ func TestGetAgentSummaryAggregationAccuracy(t *testing.T) {
 	ctx := context.Background()
 
 	const numEvents = 5
-	totalCost := 0.0
+	expectedTotalCost := 0.0
 	totalQuality := 0.0
 
 	for i := 0; i < numEvents; i++ {
 		cost := 0.01 * float64(i+1)
 		quality := 0.80 + 0.04*float64(i)
-		totalCost += cost
+		expectedTotalCost = cost // costs are cumulative per session; agent summary stores MAX per session
 		totalQuality += quality
 
 		e := sampleEvent("agent-agg", "session-agg", "complete")
@@ -561,15 +561,150 @@ func TestGetAgentSummaryAggregationAccuracy(t *testing.T) {
 		t.Errorf("TotalEvents: got %d, want %d", summary.TotalEvents, numEvents)
 	}
 
-	// Total cost should match sum within float precision.
-	if diff := summary.TotalCostUSD - totalCost; diff < -0.001 || diff > 0.001 {
-		t.Errorf("TotalCostUSD: got %.4f, want %.4f", summary.TotalCostUSD, totalCost)
+	// Total cost should match MAX within float precision.
+	if diff := summary.TotalCostUSD - expectedTotalCost; diff < -0.001 || diff > 0.001 {
+		t.Errorf("TotalCostUSD: got %.4f, want %.4f", summary.TotalCostUSD, expectedTotalCost)
 	}
 
 	// Average quality should be within 1% of expected.
 	expectedAvg := totalQuality / float64(numEvents)
 	if diff := summary.AvgQuality - expectedAvg; diff < -0.01 || diff > 0.01 {
 		t.Errorf("AvgQuality: got %.4f, want %.4f", summary.AvgQuality, expectedAvg)
+	}
+}
+
+// TestGetAgentSummaryTotalCostUsesSessionMax verifies that total_cost_usd
+// in agent_summaries does not double-count when a session emits multiple
+// complete events with cumulative cost_usd values.
+func TestGetAgentSummaryTotalCostUsesSessionMax(t *testing.T) {
+	es := newTestStore(t)
+	ctx := context.Background()
+
+	// Same session emits two complete events with cumulative costs.
+	cost1 := 0.10
+	cost2 := 0.50
+
+	e1 := sampleEvent("agent-1", "session-1", "complete")
+	e1.CostUSD = &cost1
+	e1.QualityScore = nil // keep deterministic
+	if _, err := es.InsertEvent(ctx, e1); err != nil {
+		t.Fatalf("InsertEvent e1: %v", err)
+	}
+
+	e2 := sampleEvent("agent-1", "session-1", "complete")
+	e2.CostUSD = &cost2
+	e2.QualityScore = nil
+	if _, err := es.InsertEvent(ctx, e2); err != nil {
+		t.Fatalf("InsertEvent e2: %v", err)
+	}
+
+	summary, err := es.GetAgentSummary(ctx, "agent-1")
+	if err != nil {
+		t.Fatalf("GetAgentSummary: %v", err)
+	}
+
+	// Should equal MAX(cost_usd) for session-1, not cost1+cost2.
+	if summary.TotalCostUSD != cost2 {
+		t.Errorf("TotalCostUSD: got %.2f, want %.2f", summary.TotalCostUSD, cost2)
+	}
+}
+
+// TestGetAgentSummaryIgnoresNonCompleteCosts verifies that only events
+// with event_type='complete' contribute to agent_summaries.total_cost_usd.
+func TestGetAgentSummaryIgnoresNonCompleteCosts(t *testing.T) {
+	es := newTestStore(t)
+	ctx := context.Background()
+
+	// One session: tool_call reports intermediate cumulative cost, complete
+	// reports the final cumulative cost.
+	intermediate := 0.10
+	finalCost := 0.50
+
+	toolCall := sampleEvent("agent-1", "session-1", "tool_call")
+	toolCall.CostUSD = &intermediate
+	if _, err := es.InsertEvent(ctx, toolCall); err != nil {
+		t.Fatalf("InsertEvent tool_call: %v", err)
+	}
+
+	complete := sampleEvent("agent-1", "session-1", "complete")
+	complete.CostUSD = &finalCost
+	if _, err := es.InsertEvent(ctx, complete); err != nil {
+		t.Fatalf("InsertEvent complete: %v", err)
+	}
+
+	summary, err := es.GetAgentSummary(ctx, "agent-1")
+	if err != nil {
+		t.Fatalf("GetAgentSummary: %v", err)
+	}
+	if summary.TotalCostUSD != finalCost {
+		t.Errorf("TotalCostUSD: got %.2f, want %.2f", summary.TotalCostUSD, finalCost)
+	}
+}
+
+func TestQueryDailyCostByModelBucketsLocalTime(t *testing.T) {
+	// Validate that QueryDailyCostByModel buckets by SQLite localtime
+	// (and that the caller passes local month boundaries as UTC instants).
+	t.Setenv("TZ", "Etc/GMT+5") // localtime = UTC-5
+
+	oldLocal := time.Local
+	defer func() { time.Local = oldLocal }()
+	loc, err := time.LoadLocation("Etc/GMT+5")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	time.Local = loc
+
+	es := newTestStore(t)
+	ctx := context.Background()
+
+	model := "m1"
+	costDec31 := 1.23
+	costJan1 := 2.34
+
+	// Local month: 2026-01-01 00:00 in UTC-5.
+	monthStartLocal := time.Date(2026, 1, 1, 0, 0, 0, 0, time.Local)
+	monthEndLocal := monthStartLocal.AddDate(0, 1, 0)
+
+	// UTC timestamps:
+	// - 2026-01-01 04:00 UTC == 2025-12-31 23:00 local (should be excluded)
+	// - 2026-01-01 06:00 UTC == 2026-01-01 01:00 local (should be included)
+	evDec31 := store.Event{
+		AgentID:   "agent",
+		SessionID: "s1",
+		EventType: "complete",
+		Model:     model,
+		Timestamp: time.Date(2026, 1, 1, 4, 0, 0, 0, time.UTC),
+		CostUSD:   &costDec31,
+	}
+	if _, err := es.InsertEvent(ctx, evDec31); err != nil {
+		t.Fatalf("InsertEvent dec31: %v", err)
+	}
+
+	evJan1 := store.Event{
+		AgentID:   "agent",
+		SessionID: "s2",
+		EventType: "complete",
+		Model:     model,
+		Timestamp: time.Date(2026, 1, 1, 6, 0, 0, 0, time.UTC),
+		CostUSD:   &costJan1,
+	}
+	if _, err := es.InsertEvent(ctx, evJan1); err != nil {
+		t.Fatalf("InsertEvent jan1: %v", err)
+	}
+
+	rows, err := es.QueryDailyCostByModel(ctx, monthStartLocal.UTC(), monthEndLocal.UTC())
+	if err != nil {
+		t.Fatalf("QueryDailyCostByModel: %v", err)
+	}
+
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d: %+v", len(rows), rows)
+	}
+	if rows[0].Day.Format("2006-01-02") != "2026-01-01" {
+		t.Fatalf("expected day 2026-01-01, got %s", rows[0].Day.Format("2006-01-02"))
+	}
+	if rows[0].TotalCostUSD != costJan1 {
+		t.Fatalf("expected cost %.2f, got %.2f", costJan1, rows[0].TotalCostUSD)
 	}
 }
 
