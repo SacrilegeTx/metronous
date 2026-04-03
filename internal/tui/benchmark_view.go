@@ -511,8 +511,11 @@ func (m BenchmarkModel) View() string {
 	var cycleLabel string
 	if totalCycles > 0 {
 		cycleStart := m.cycles[m.cycleIndex]
+		// cycleIndex 0 = most recent cycle = highest number (totalCycles).
+		// cycleIndex totalCycles-1 = oldest = cycle 1.
+		currentNum := totalCycles - m.cycleIndex
 		cycleLabel = fmt.Sprintf("cycle %d/%d  (week of %s)",
-			m.cycleIndex+1, totalCycles, cycleStart.Local().Format("2006-01-02"))
+			currentNum, totalCycles, cycleStart.Local().Format("2006-01-02"))
 	} else {
 		cycleLabel = "cycle 1/1"
 	}
