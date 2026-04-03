@@ -24,8 +24,10 @@ import (
 )
 
 // updateDoneMsg is sent when a self-update command completes.
-// err is empty on success, non-empty on failure.
-type updateDoneMsg struct{ err string }
+type updateDoneMsg struct {
+	msg     string
+	isError bool
+}
 
 // UpdateCheckMsg is sent when the background update check completes.
 type UpdateCheckMsg struct {
@@ -286,10 +288,10 @@ func httpGet(url string) ([]byte, error) {
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle self-update result.
 	if ud, ok := msg.(updateDoneMsg); ok {
-		if ud.err != "" {
-			m.StatusMsg = ud.err
+		if ud.isError {
+			m.StatusMsg = "✗ " + ud.msg
 		} else {
-			m.StatusMsg = "Update complete! Restart the dashboard to use the new version."
+			m.StatusMsg = "✓ " + ud.msg
 		}
 		return m, nil
 	}
@@ -332,10 +334,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				updateCmd := exec.Command(exePath, "self-update")
 				out, err := updateCmd.CombinedOutput()
+				outStr := strings.TrimSpace(string(out))
 				if err != nil {
-					return updateDoneMsg{err: fmt.Sprintf("Update failed: %s", strings.TrimSpace(string(out)))}
+					return updateDoneMsg{msg: "Update failed: " + outStr, isError: true}
 				}
-				return updateDoneMsg{err: ""}
+				if strings.Contains(outStr, "Already up to date") {
+					return updateDoneMsg{msg: "Already up to date — no update needed.", isError: false}
+				}
+				return updateDoneMsg{msg: "Update complete! Restart the dashboard to use the new version.", isError: false}
 			}
 
 		case "1":
@@ -468,10 +474,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, func() tea.Msg {
 						updateCmd := exec.Command(exePath, "self-update")
 						out, err := updateCmd.CombinedOutput()
+						outStr := strings.TrimSpace(string(out))
 						if err != nil {
-							return updateDoneMsg{err: fmt.Sprintf("Update failed: %s", strings.TrimSpace(string(out)))}
+							return updateDoneMsg{msg: "Update failed: " + outStr, isError: true}
 						}
-						return updateDoneMsg{err: ""}
+						if strings.Contains(outStr, "Already up to date") {
+							return updateDoneMsg{msg: "Already up to date — no update needed.", isError: false}
+						}
+						return updateDoneMsg{msg: "Update complete! Restart the dashboard to use the new version.", isError: false}
 					}
 				}
 				m.CurrentTab = Tab(m.landingCursor)
