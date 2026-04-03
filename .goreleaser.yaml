@@ -1,10 +1,10 @@
 project_name: metronous
 version: 2
 archives:
-  - type: tar.gz
-    type_overrides:
+  - format: tar.gz
+    format_overrides:
       - goos: windows
-        type: zip
+        format: zip
 checksum:
   name_template: checksums.txt
 changelog:
