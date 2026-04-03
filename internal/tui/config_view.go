@@ -45,10 +45,8 @@ type configField struct {
 
 var configFields = []configField{
 	{label: "Min Accuracy", key: "min_accuracy", step: 0.01, min: 0, max: 1},
-	{label: "Max P95 Latency (ms)", key: "max_latency_p95_ms", step: 1000, min: 0, max: 300000},
-	{label: "Min Tool Success Rate", key: "min_tool_success_rate", step: 0.01, min: 0, max: 1},
-	{label: "Min ROI Score", key: "min_roi_score", step: 0.01, min: 0, max: 1.0},
-	{label: "Max Cost/Session (USD)", key: "max_cost_usd_per_session", step: 0.01, min: 0, max: 100},
+	{label: "Min ROI Score", key: "min_roi_score", step: 0.01, min: 0, max: 10.0},
+	{label: "Max Cost/Session (USD)", key: "max_cost_usd_per_session", step: 0.50, min: 0, max: 100},
 }
 
 var (
@@ -150,10 +148,6 @@ func (m *ConfigModel) getFieldValue(key string) float64 {
 	switch key {
 	case "min_accuracy":
 		return m.thresholds.Defaults.MinAccuracy
-	case "max_latency_p95_ms":
-		return float64(m.thresholds.Defaults.MaxLatencyP95Ms)
-	case "min_tool_success_rate":
-		return m.thresholds.Defaults.MinToolSuccessRate
 	case "min_roi_score":
 		return m.thresholds.Defaults.MinROIScore
 	case "max_cost_usd_per_session":
@@ -167,10 +161,6 @@ func (m *ConfigModel) setFieldValue(key string, v float64) {
 	switch key {
 	case "min_accuracy":
 		m.thresholds.Defaults.MinAccuracy = v
-	case "max_latency_p95_ms":
-		m.thresholds.Defaults.MaxLatencyP95Ms = int(v)
-	case "min_tool_success_rate":
-		m.thresholds.Defaults.MinToolSuccessRate = v
 	case "min_roi_score":
 		m.thresholds.Defaults.MinROIScore = v
 	case "max_cost_usd_per_session":
@@ -321,12 +311,6 @@ func validateThresholds(t config.Thresholds) error {
 	d := t.Defaults
 	if d.MinAccuracy < 0 || d.MinAccuracy > 1.0 {
 		return fmt.Errorf("min_accuracy %.4f is outside valid range [0, 1]", d.MinAccuracy)
-	}
-	if d.MinToolSuccessRate < 0 || d.MinToolSuccessRate > 1.0 {
-		return fmt.Errorf("min_tool_success_rate %.4f is outside valid range [0, 1]", d.MinToolSuccessRate)
-	}
-	if d.MaxLatencyP95Ms < 0 {
-		return fmt.Errorf("max_latency_p95_ms %d must be >= 0", d.MaxLatencyP95Ms)
 	}
 	if d.MinROIScore < 0 {
 		return fmt.Errorf("min_roi_score %.4f must be >= 0", d.MinROIScore)

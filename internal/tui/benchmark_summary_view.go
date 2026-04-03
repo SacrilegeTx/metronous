@@ -69,6 +69,7 @@ type BenchmarkSummaryModel struct {
 	runner        IntraweekRunner
 	running       bool
 	runErr        error
+	minROI        float64 // from thresholds config
 }
 
 const maxSummaryRows = 10
@@ -95,6 +96,7 @@ func NewBenchmarkSummaryModel(bs store.BenchmarkStore, r IntraweekRunner) Benchm
 		loading: true,
 		offset:  0,
 		runner:  r,
+		minROI:  0.05, // matches config.DefaultThresholdValues
 	}
 }
 
@@ -111,6 +113,10 @@ func (m BenchmarkSummaryModel) Init() tea.Cmd {
 // Update handles data, tick, and key messages.
 func (m BenchmarkSummaryModel) Update(msg tea.Msg) (BenchmarkSummaryModel, tea.Cmd) {
 	switch msg := msg.(type) {
+	case ConfigReloadedMsg:
+		m.minROI = msg.Thresholds.Defaults.MinROIScore
+		return m, nil
+
 	case benchmarkSummaryTickMsg:
 		return m, tea.Batch(
 			tea.Tick(benchmarkSummaryRefreshInterval, func(t time.Time) tea.Msg {
@@ -291,7 +297,7 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 			}
 		}
 
-		const defaultMinROI = 0.05 // matches config.DefaultThresholdValues
+		minROI := m.minROI
 
 		// Build sorted rows.
 		var rows []summaryRow
@@ -314,7 +320,7 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 			} else {
 				avgROI = a.lastROI
 			}
-			health := computeHealthScore(avgAcc, avgP95, a.lastVerdict, avgROI, defaultMinROI)
+			health := computeHealthScore(avgAcc, avgP95, a.lastVerdict, avgROI, minROI)
 			rows = append(rows, summaryRow{
 				AgentID:      k.agent,
 				Model:        k.model,
@@ -508,7 +514,7 @@ func (m *BenchmarkSummaryModel) View() string {
 	if len(m.rows) > 0 {
 		totalPages = (len(m.rows) + maxSummaryRows - 1) / maxSummaryRows
 	}
-	footer := fmt.Sprintf("  %d agent/model pair(s)  |  page %d/%d  |  ↑↓ to navigate  |  3: switch to Detailed view",
+	footer := fmt.Sprintf("  %d agent/model pair(s)  |  page %d/%d  |  ↑↓ to navigate  |  2: switch to Detailed view",
 		len(m.rows), pageNum, totalPages)
 	sb.WriteString(dimStyle.Render(footer))
 	sb.WriteString("\n")

@@ -39,9 +39,9 @@ type UpdateCheckMsg struct {
 type Tab int
 
 const (
-	TabTracking          Tab = iota // 0 — real-time event stream
-	TabBenchmarkSummary             // 1 — aggregated benchmark summary
-	TabBenchmarkDetailed            // 2 — per-run benchmark history
+	TabBenchmarkSummary  Tab = iota // 0 — aggregated benchmark summary
+	TabBenchmarkDetailed            // 1 — per-run benchmark history
+	TabTracking                     // 2 — real-time event stream
 	TabCharts                       // 3 — cost charts
 	TabConfig                       // 4 — threshold editor
 )
@@ -54,9 +54,9 @@ const numTabs = 5
 
 // tabNames are the display labels for each tab (1-indexed for humans).
 var tabNames = [numTabs]string{
-	"[1] Tracking",
-	"[2] Benchmark Summary",
-	"[3] Benchmark Detailed",
+	"[1] Benchmark Summary",
+	"[2] Benchmark Detailed",
+	"[3] Tracking",
 	"[4] Charts",
 	"[5] Config",
 }
@@ -156,7 +156,7 @@ func NewAppModel(es store.EventStore, bs store.BenchmarkStore, configPath string
 	}
 
 	return AppModel{
-		CurrentTab:       TabTracking,
+		CurrentTab:       TabBenchmarkSummary,
 		tracking:         NewTrackingModel(es),
 		benchmarkSummary: NewBenchmarkSummaryModel(bs, iwr),
 		benchmark:        NewBenchmarkModel(bs, dataDir, workDir, iwr),
@@ -345,7 +345,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "1":
-			m.CurrentTab = TabTracking
+			if m.CurrentTab == TabTracking {
+				m.closeTrackingPopup()
+			}
+			m.CurrentTab = TabBenchmarkSummary
 			m.landingCursor = 0
 			m.showLanding = false
 			m.needsClear = true
@@ -354,16 +357,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.CurrentTab == TabTracking {
 				m.closeTrackingPopup()
 			}
-			m.CurrentTab = TabBenchmarkSummary
+			m.CurrentTab = TabBenchmarkDetailed
 			m.landingCursor = 1
 			m.showLanding = false
 			m.needsClear = true
 			return m, nil
 		case "3":
-			if m.CurrentTab == TabTracking {
-				m.closeTrackingPopup()
-			}
-			m.CurrentTab = TabBenchmarkDetailed
+			m.closeTrackingPopup()
+			m.CurrentTab = TabTracking
 			m.landingCursor = 2
 			m.showLanding = false
 			m.needsClear = true
@@ -594,7 +595,7 @@ func (m *AppModel) View() string {
 	if m.showLanding {
 		hint = statusBarStyle.Render("1/2/3/4/5 or ↑/↓: select  Enter: open/quit  q: quit")
 	} else {
-		hint = statusBarStyle.Render("↑/↓: navigate  q: quit  1/2/3/4/5 or ←/→: switch tabs  ctrl+s: save  ctrl+r: reload  u: update")
+		hint = statusBarStyle.Render("↑/↓: navigate  q: quit  1/2/3/4/5 or ←/→: switch tabs  u: update")
 	}
 
 	statusLine := ""
@@ -648,9 +649,9 @@ func (m *AppModel) renderLanding() string {
 		updateStatus = "Update  (up to date)"
 	}
 	entries := []menuEntry{
-		{0, "Tracking"},
-		{1, "Benchmark Summary"},
-		{2, "Benchmark Detailed"},
+		{0, "Benchmark Summary"},
+		{1, "Benchmark Detailed"},
+		{2, "Tracking"},
 		{3, "Charts"},
 		{4, "Config"},
 		{5, updateStatus},

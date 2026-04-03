@@ -53,6 +53,8 @@ type ChartsModel struct {
 	totalsByCost                 map[string]float64
 
 	cursorDayIndex int // 0-based within the selected month
+
+	minROI float64 // from thresholds config — used for health score computation
 }
 
 func daysInMonth(monthStart time.Time) int {
@@ -110,7 +112,7 @@ func totalsByCost(rows []store.DailyCostByModelRow) map[string]float64 {
 // Matches config.DefaultThresholdValues().Defaults.MinROIScore.
 const defaultChartMinROI = 0.05
 
-func rankModelsByPerformance(summaries []store.BenchmarkModelSummary, active map[string]struct{}, limit int) []string {
+func rankModelsByPerformance(summaries []store.BenchmarkModelSummary, active map[string]struct{}, limit int, minROI float64) []string {
 	type item struct {
 		model string
 		score float64
@@ -123,7 +125,7 @@ func rankModelsByPerformance(summaries []store.BenchmarkModelSummary, active map
 		}
 		items = append(items, item{
 			model: s.Model,
-			score: computeHealthScore(s.AvgAccuracy, s.AvgP95Ms, s.LastVerdict, 0, defaultChartMinROI),
+			score: computeHealthScore(s.AvgAccuracy, s.AvgP95Ms, s.LastVerdict, 0, minROI),
 			cost:  s.TotalCostUSD,
 		})
 	}
@@ -302,7 +304,7 @@ func responsibilityWeightForAgent(agentID string) float64 {
 	}
 }
 
-func aggregateChartsModelStats(runs []store.BenchmarkRun) map[string]*chartModelStats {
+func aggregateChartsModelStats(runs []store.BenchmarkRun, minROI float64) map[string]*chartModelStats {
 	stats := make(map[string]*chartModelStats)
 	for _, run := range runs {
 		if run.Model == "" || run.RunAt.IsZero() {
@@ -351,7 +353,7 @@ func aggregateChartsModelStats(runs []store.BenchmarkRun) map[string]*chartModel
 			runROI = run.ROIScore
 		}
 		s.roleWeightSum += float64(samples)
-		weightedScore := computeHealthScore(run.Accuracy, run.P95LatencyMs, run.Verdict, runROI, defaultChartMinROI) * weight
+		weightedScore := computeHealthScore(run.Accuracy, run.P95LatencyMs, run.Verdict, runROI, minROI) * weight
 		s.roleWeightedScore += weightedScore * float64(samples)
 	}
 
@@ -366,7 +368,7 @@ func aggregateChartsModelStats(runs []store.BenchmarkRun) map[string]*chartModel
 		if s.ROISamples > 0 {
 			avgROI = s.SumROI / float64(s.ROISamples)
 		}
-		s.HealthScore = computeHealthScore(avgAcc, avgP95, s.LastVerdict, avgROI, defaultChartMinROI)
+		s.HealthScore = computeHealthScore(avgAcc, avgP95, s.LastVerdict, avgROI, minROI)
 		if s.roleWeightSum > 0 {
 			s.ResponsibilityScore = s.roleWeightedScore / s.roleWeightSum
 		} else {
@@ -1052,6 +1054,7 @@ func NewChartsModel(es store.EventStore, bs store.BenchmarkStore) ChartsModel {
 		monthStart:     monthStart,
 		loading:        true,
 		cursorDayIndex: 0,
+		minROI:         defaultChartMinROI,
 	}
 }
 
@@ -1064,6 +1067,10 @@ func (m ChartsModel) Init() tea.Cmd {
 
 func (m ChartsModel) Update(msg tea.Msg) (ChartsModel, tea.Cmd) {
 	switch msg := msg.(type) {
+	case ConfigReloadedMsg:
+		m.minROI = msg.Thresholds.Defaults.MinROIScore
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -1149,6 +1156,7 @@ func (m ChartsModel) fetchChartData() tea.Cmd {
 	monthStart := m.monthStart
 	es := m.es
 	bs := m.bs
+	minROI := m.minROI
 	return func() tea.Msg {
 		if es == nil {
 			return ChartsDataMsg{MonthStart: monthStart, Rows: nil, SelectedModels: nil, Err: nil}
@@ -1172,7 +1180,7 @@ func (m ChartsModel) fetchChartData() tea.Cmd {
 			if err != nil {
 				return ChartsDataMsg{MonthStart: monthStart, Err: err}
 			}
-			stats = aggregateChartsModelStats(runs)
+			stats = aggregateChartsModelStats(runs, minROI)
 			performanceSelected = rankChartsByScoreForMonth(stats, totals, func(s *chartModelStats) float64 { return s.HealthScore }, 3)
 			responsibilitySelected = rankChartsByScoreForMonth(stats, totals, func(s *chartModelStats) float64 { return s.ResponsibilityScore }, 3)
 			if len(performanceSelected) == 0 {

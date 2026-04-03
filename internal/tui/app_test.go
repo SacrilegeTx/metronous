@@ -33,8 +33,8 @@ func newTestApp(t *testing.T) *tui.AppModel {
 
 func TestAppInitialModel(t *testing.T) {
 	m := newTestApp(t)
-	if m.CurrentTab != tui.TabTracking {
-		t.Errorf("expected initial tab to be TabTracking (0), got %d", m.CurrentTab)
+	if m.CurrentTab != tui.TabBenchmarkSummary {
+		t.Errorf("expected initial tab to be TabBenchmarkSummary (0), got %d", m.CurrentTab)
 	}
 }
 
@@ -49,25 +49,25 @@ func TestAppInit(t *testing.T) {
 func TestAppTabSwitchingByNumber(t *testing.T) {
 	m := newTestApp(t)
 
-	// 1 → Tracking (already there)
+	// 1 → Benchmark Summary
 	updated, _ := sendKey(m, "1")
 	m = updated.(*tui.AppModel)
-	if m.CurrentTab != tui.TabTracking {
-		t.Errorf("expected TabTracking after pressing 1, got %d", m.CurrentTab)
+	if m.CurrentTab != tui.TabBenchmarkSummary {
+		t.Errorf("expected TabBenchmarkSummary after pressing 1, got %d", m.CurrentTab)
 	}
 
-	// 2 → Benchmark Summary
+	// 2 → Benchmark Detailed
 	updated, _ = sendKey(m, "2")
 	m = updated.(*tui.AppModel)
-	if m.CurrentTab != tui.TabBenchmarkSummary {
-		t.Errorf("expected TabBenchmarkSummary after pressing 2, got %d", m.CurrentTab)
+	if m.CurrentTab != tui.TabBenchmarkDetailed {
+		t.Errorf("expected TabBenchmarkDetailed after pressing 2, got %d", m.CurrentTab)
 	}
 
-	// 3 → Benchmark Detailed
+	// 3 → Tracking
 	updated, _ = sendKey(m, "3")
 	m = updated.(*tui.AppModel)
-	if m.CurrentTab != tui.TabBenchmarkDetailed {
-		t.Errorf("expected TabBenchmarkDetailed after pressing 3, got %d", m.CurrentTab)
+	if m.CurrentTab != tui.TabTracking {
+		t.Errorf("expected TabTracking after pressing 3, got %d", m.CurrentTab)
 	}
 
 	// 4 → Charts
@@ -84,11 +84,11 @@ func TestAppTabSwitchingByNumber(t *testing.T) {
 		t.Errorf("expected TabConfig after pressing 5, got %d", m.CurrentTab)
 	}
 
-	// Back to 1 → Tracking
+	// Back to 1 → Benchmark Summary
 	updated, _ = sendKey(m, "1")
 	m = updated.(*tui.AppModel)
-	if m.CurrentTab != tui.TabTracking {
-		t.Errorf("expected TabTracking after pressing 1, got %d", m.CurrentTab)
+	if m.CurrentTab != tui.TabBenchmarkSummary {
+		t.Errorf("expected TabBenchmarkSummary after pressing 1, got %d", m.CurrentTab)
 	}
 }
 
@@ -98,18 +98,18 @@ func TestAppTabSwitchingByArrowKeys(t *testing.T) {
 	updated, _ := sendKey(m, "1")
 	m = updated.(*tui.AppModel)
 
-	// right → TabBenchmarkSummary
-	updated, _ = sendSpecialKey(m, tea.KeyRight)
-	m = updated.(*tui.AppModel)
-	if m.CurrentTab != tui.TabBenchmarkSummary {
-		t.Errorf("expected TabBenchmarkSummary after right arrow, got %d", m.CurrentTab)
-	}
-
 	// right → TabBenchmarkDetailed
 	updated, _ = sendSpecialKey(m, tea.KeyRight)
 	m = updated.(*tui.AppModel)
 	if m.CurrentTab != tui.TabBenchmarkDetailed {
 		t.Errorf("expected TabBenchmarkDetailed after right arrow, got %d", m.CurrentTab)
+	}
+
+	// right → TabTracking
+	updated, _ = sendSpecialKey(m, tea.KeyRight)
+	m = updated.(*tui.AppModel)
+	if m.CurrentTab != tui.TabTracking {
+		t.Errorf("expected TabTracking after right arrow, got %d", m.CurrentTab)
 	}
 
 	// right → TabCharts
@@ -167,11 +167,11 @@ func TestEscReturnsToLanding(t *testing.T) {
 func TestAppArrowKeyDoesNotWrapBeyondBounds(t *testing.T) {
 	m := newTestApp(t)
 
-	// Left at first tab → stays at TabTracking.
+	// Left at first tab → stays at TabBenchmarkSummary.
 	updated, _ := sendSpecialKey(m, tea.KeyLeft)
 	m = updated.(*tui.AppModel)
-	if m.CurrentTab != tui.TabTracking {
-		t.Errorf("expected tab to stay at TabTracking, got %d", m.CurrentTab)
+	if m.CurrentTab != tui.TabBenchmarkSummary {
+		t.Errorf("expected tab to stay at TabBenchmarkSummary, got %d", m.CurrentTab)
 	}
 
 	// Jump to last tab (5 = Config) then press right → stays at TabConfig.
@@ -1211,9 +1211,9 @@ func TestAppTabSwitchingFiveTabs(t *testing.T) {
 		wantTab tui.Tab
 		label   string
 	}{
-		{"1", tui.TabTracking, "TabTracking"},
-		{"2", tui.TabBenchmarkSummary, "TabBenchmarkSummary"},
-		{"3", tui.TabBenchmarkDetailed, "TabBenchmarkDetailed"},
+		{"1", tui.TabBenchmarkSummary, "TabBenchmarkSummary"},
+		{"2", tui.TabBenchmarkDetailed, "TabBenchmarkDetailed"},
+		{"3", tui.TabTracking, "TabTracking"},
 		{"4", tui.TabCharts, "TabCharts"},
 		{"5", tui.TabConfig, "TabConfig"},
 	}
