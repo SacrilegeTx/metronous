@@ -183,6 +183,12 @@ func (r *Runner) run(ctx context.Context, kind store.RunKindType, start, end tim
 	return nil
 }
 
+// modelMetrics holds the computed metrics and verdict for a single (agent, model) pair.
+type modelMetrics struct {
+	metrics benchmark.WindowMetrics
+	verdict decision.Verdict
+}
+
 // processAgentAllModels computes metrics and evaluates the verdict for each
 // distinct model used by the agent in the given window. It returns one
 // agentResult per (agent, model) pair so the benchmark captures per-model
@@ -207,53 +213,117 @@ func (r *Runner) processAgentAllModels(ctx context.Context, agentID string, star
 		return nil, nil
 	}
 
-	// 3. Process each model independently.
+	// 3. Compute metrics for every model independently.
 	now := time.Now().UTC()
-	var results []agentResult
+	perModel := make(map[string]modelMetrics, len(modelEvents))
 	for model, evts := range modelEvents {
-		metrics := benchmark.AggregateMetrics(r.logger, agentID, evts)
-		// Override the model with the normalized name so downstream consumers
-		// always see consistent identifiers regardless of provider prefix.
-		metrics.Model = model
+		m := benchmark.AggregateMetrics(r.logger, agentID, evts)
+		m.Model = model
+		v := r.engine.Evaluate(ctx, m)
+		perModel[model] = modelMetrics{metrics: m, verdict: v}
+	}
 
-		verdict := r.engine.Evaluate(ctx, metrics)
+	// 4. Build results, replacing the static recommended model with the best
+	// alternative derived from real benchmark data for this agent.
+	var results []agentResult
+	for model, pm := range perModel {
+		recommended := pm.verdict.RecommendedModel
+		if pm.verdict.Type == store.VerdictSwitch || pm.verdict.Type == store.VerdictUrgentSwitch {
+			recommended = bestAlternativeModel(model, pm.metrics, perModel)
+			if recommended == "" {
+				// No better model found in current window data — keep config fallback.
+				recommended = pm.verdict.RecommendedModel
+			}
+		}
 
 		run := store.BenchmarkRun{
 			RunAt:               now,
 			WindowDays:          windowDays,
 			AgentID:             agentID,
 			Model:               model,
-			Accuracy:            metrics.Accuracy,
-			AvgLatencyMs:        metrics.AvgTurnMs,
-			P50LatencyMs:        metrics.P50TurnMs,
-			P95LatencyMs:        metrics.P95TurnMs,
-			P99LatencyMs:        metrics.P99TurnMs,
-			ToolSuccessRate:     metrics.ToolSuccessRate,
-			ROIScore:            metrics.ROIScore,
-			TotalCostUSD:        metrics.TotalCostUSD,
-			SampleSize:          metrics.SampleSize,
-			Verdict:             verdict.Type,
-			RecommendedModel:    verdict.RecommendedModel,
-			DecisionReason:      verdict.Reason,
-			AvgQualityScore:     metrics.AvgQuality,
-			AvgPromptTokens:     metrics.AvgPromptTokens,
-			AvgCompletionTokens: metrics.AvgCompletionTokens,
-			AvgTurnMs:           metrics.AvgTurnMs,
-			P95TurnMs:           metrics.P95TurnMs,
+			Accuracy:            pm.metrics.Accuracy,
+			AvgLatencyMs:        pm.metrics.AvgTurnMs,
+			P50LatencyMs:        pm.metrics.P50TurnMs,
+			P95LatencyMs:        pm.metrics.P95TurnMs,
+			P99LatencyMs:        pm.metrics.P99TurnMs,
+			ToolSuccessRate:     pm.metrics.ToolSuccessRate,
+			ROIScore:            pm.metrics.ROIScore,
+			TotalCostUSD:        pm.metrics.TotalCostUSD,
+			SampleSize:          pm.metrics.SampleSize,
+			Verdict:             pm.verdict.Type,
+			RecommendedModel:    recommended,
+			DecisionReason:      pm.verdict.Reason,
+			AvgQualityScore:     pm.metrics.AvgQuality,
+			AvgPromptTokens:     pm.metrics.AvgPromptTokens,
+			AvgCompletionTokens: pm.metrics.AvgCompletionTokens,
+			AvgTurnMs:           pm.metrics.AvgTurnMs,
+			P95TurnMs:           pm.metrics.P95TurnMs,
 			// ArtifactPath, RunKind, WindowStart, WindowEnd set by caller.
 		}
+
+		// Also patch the verdict so the artifact reflects the data-driven recommendation.
+		v := pm.verdict
+		v.RecommendedModel = recommended
+		results = append(results, agentResult{verdict: v, run: run})
 
 		r.logger.Info("agent/model benchmark complete",
 			zap.String("agent_id", agentID),
 			zap.String("model", model),
-			zap.String("verdict", string(verdict.Type)),
-			zap.Int("sample_size", metrics.SampleSize),
+			zap.String("verdict", string(pm.verdict.Type)),
+			zap.String("recommended", recommended),
+			zap.Int("sample_size", pm.metrics.SampleSize),
 		)
-
-		results = append(results, agentResult{verdict: verdict, run: run})
 	}
 
 	return results, nil
+}
+
+// bestAlternativeModel selects the best alternative model for an agent that needs
+// a SWITCH, based on real benchmark data from other models used by the same agent
+// in the current window.
+//
+// Selection criteria (priority order — same as our objective):
+//  1. Accuracy first — the candidate must have equal or better accuracy
+//  2. Within equal accuracy, prefer higher ROI (more accurate per dollar)
+//  3. Within equal ROI, prefer lower avg turn time
+//
+// Returns empty string if no better alternative is found in the current window.
+func bestAlternativeModel(currentModel string, current benchmark.WindowMetrics, perModel map[string]modelMetrics) string {
+	bestModel := ""
+	bestAcc := current.Accuracy
+	bestROI := current.ROIScore
+	bestTurn := current.AvgTurnMs
+
+	for model, pm := range perModel {
+		if model == currentModel {
+			continue
+		}
+		m := pm.metrics
+		// Must have sufficient data.
+		if m.SampleSize < benchmark.MinSampleSize {
+			continue
+		}
+		// Must not itself be flagged for urgent switch.
+		if pm.verdict.Type == store.VerdictUrgentSwitch {
+			continue
+		}
+
+		// Better if: higher accuracy, OR same accuracy with better ROI,
+		// OR same accuracy+ROI with lower turn time.
+		betterAcc := m.Accuracy > bestAcc
+		sameAcc := m.Accuracy >= bestAcc-0.001
+		betterROI := m.ROIScore > bestROI
+		sameROI := m.ROIScore >= bestROI-0.001
+		betterTurn := bestTurn <= 0 || (m.AvgTurnMs > 0 && m.AvgTurnMs < bestTurn)
+
+		if betterAcc || (sameAcc && betterROI) || (sameAcc && sameROI && betterTurn) {
+			bestModel = model
+			bestAcc = m.Accuracy
+			bestROI = m.ROIScore
+			bestTurn = m.AvgTurnMs
+		}
+	}
+	return bestModel
 }
 
 // discoverAgents returns distinct agent IDs from events within the given window.

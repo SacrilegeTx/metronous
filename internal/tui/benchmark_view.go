@@ -547,8 +547,9 @@ func renderDetailPanel(run store.BenchmarkRun, pricing map[string]float64, trend
 	var sb strings.Builder
 
 	// Prevent terminal auto-wrapping from pushing/popping the main table out of
-	// view when switching rows.
-	const maxDetailValueLen = 120
+	// view when switching rows. Use a generous limit so multi-line fields like
+	// the trend legend are never truncated.
+	const maxDetailValueLen = 200
 	clamp := func(s string) string {
 		s = strings.TrimSpace(s)
 		if len(s) <= maxDetailValueLen {
@@ -655,8 +656,7 @@ func formatVerdictTrend(trend []string) string {
 	}
 	trendLine := strings.Join(abbrevs, " → ")
 	direction := trendDirectionStyled(trend)
-	legend := "  Legend: K=KEEP  S=SWITCH  U=URGENT_SWITCH  ?=INSUFFICIENT_DATA"
-	return fmt.Sprintf("%s  (%s)\n%s", trendLine, direction, legend)
+	return fmt.Sprintf("%s  (%s)\nLegend: K=KEEP  S=SWITCH  U=URGENT_SWITCH  ?=INSUFFICIENT_DATA", trendLine, direction)
 }
 
 // verdictSeverity returns a numeric severity for a verdict (lower = better).
