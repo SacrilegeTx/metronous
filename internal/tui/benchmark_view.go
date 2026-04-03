@@ -570,11 +570,9 @@ func renderDetailPanel(run store.BenchmarkRun, pricing map[string]float64, trend
 		return sb.String()
 	}
 
-	// Avoid multi-line layout shifts from DecisionReason (which can contain
-	// newlines). Keeping the detail panel single-line per field prevents
-	// terminal scrolling artifacts while moving the cursor.
-	reason := strings.ReplaceAll(run.DecisionReason, "\n", " ")
-	reason = clamp(reason)
+	// Reason is always derived dynamically from numeric fields so historical
+	// runs reflect the current formula, not the stale text stored in the DB.
+	reason := clamp(renderReason(run))
 
 	// Verdict line: show switch arrow if applicable.
 	verdictLine := string(run.Verdict)
@@ -717,94 +715,155 @@ func trendDirection(verdicts []string) string {
 	return "→ stable"
 }
 
-// evaluateAgentContext returns a short qualitative assessment of whether the agent
-// fulfilled its mission, based on its known role and available telemetry metrics.
-func evaluateAgentContext(run store.BenchmarkRun) string {
-	switch run.AgentID {
-	case "sdd-orchestrator":
-		// Mission: coordinate, never do work inline
-		// Good: high tool_success (delegates correctly)
-		// Bad: if tool success < 0.8, likely doing inline work
-		if run.ToolSuccessRate >= 0.9 {
-			return "Coordinating effectively — delegations succeeding at expected rate"
-		} else if run.ToolSuccessRate >= 0.7 {
-			return "Some delegation failures detected — may be attempting inline work"
-		}
-		return "High failure rate — orchestrator may be bypassing delegation pattern"
+// renderReason generates the Reason string dynamically from the run's numeric
+// fields. This is intentionally NOT read from run.DecisionReason so that any
+// improvements to the formula are reflected immediately in historical runs.
+func renderReason(run store.BenchmarkRun) string {
+	switch run.Verdict {
+	case store.VerdictInsufficientData:
+		return fmt.Sprintf("Insufficient data: only %d events (minimum 50 required)", run.SampleSize)
 
-	case "sdd-apply":
-		// Mission: implement code changes
-		// Good: high tool success (edits, writes working)
-		// Bad: low success means broken implementations
-		if run.ToolSuccessRate >= 0.9 {
-			return "Implementations landing correctly — code changes applied successfully"
-		} else if run.ToolSuccessRate >= 0.7 {
-			return "Some implementation failures — review task definitions for clarity"
+	case store.VerdictUrgentSwitch:
+		var parts []string
+		if run.Accuracy < 0.70 {
+			parts = append(parts, fmt.Sprintf("URGENT: accuracy %.1f%% is critically low", run.Accuracy*100))
 		}
-		return "High implementation failure rate — task definitions may be incomplete"
+		if len(parts) == 0 {
+			parts = append(parts, "URGENT: critical threshold breached")
+		}
+		return strings.Join(parts, "; ")
 
-	case "sdd-explore":
-		// Mission: investigate codebase and think through ideas
-		// Good: high tool success (reads, searches working)
-		// Check: sample size indicates depth of exploration
-		if run.SampleSize >= 50 && run.ToolSuccessRate >= 0.9 {
-			return "Deep exploration with high read success — investigations thorough"
-		} else if run.ToolSuccessRate >= 0.8 {
-			return "Adequate exploration — consider deeper codebase analysis"
+	case store.VerdictSwitch:
+		var parts []string
+		if run.Accuracy < 0.95 {
+			parts = append(parts, fmt.Sprintf("accuracy %.1f%% below threshold 95.0%%", run.Accuracy*100))
 		}
-		return "Shallow exploration detected — may be missing critical context"
+		if run.ROIScore > 0 && run.ROIScore < 0.05 {
+			parts = append(parts, fmt.Sprintf("ROI %.2f below threshold 0.05 (cost too high relative to accuracy)", run.ROIScore))
+		}
+		if len(parts) == 0 {
+			parts = append(parts, "threshold breached")
+		}
+		return strings.Join(parts, "; ")
 
-	case "sdd-verify":
-		// Mission: validate implementation against specs
-		// Good: high tool success (reads, comparisons working)
-		if run.ToolSuccessRate >= 0.9 {
-			return "Validation passing — spec compliance checks executing correctly"
-		} else if run.ToolSuccessRate >= 0.7 {
-			return "Some validation failures — specs may need clarification"
+	case store.VerdictKeep:
+		var parts []string
+		parts = append(parts, fmt.Sprintf("accuracy=%.1f%%", run.Accuracy*100))
+		if run.AvgTurnMs > 0 {
+			parts = append(parts, fmt.Sprintf("avg_response=%.1fs", run.AvgTurnMs/1000))
 		}
-		return "Validation failing frequently — implementation may not match specs"
-
-	case "sdd-spec":
-		if run.ToolSuccessRate >= 0.9 {
-			return "Spec writing succeeding — requirements captured correctly"
+		if run.ROIScore > 0 {
+			parts = append(parts, fmt.Sprintf("roi=%.2f", run.ROIScore))
+		} else {
+			parts = append(parts, "roi=N/A (free model or no billing data)")
 		}
-		return "Spec generation issues — proposal inputs may be incomplete"
-
-	case "sdd-design":
-		if run.ToolSuccessRate >= 0.9 {
-			return "Design artifacts generated successfully"
-		}
-		return "Design generation issues — proposal may need more detail"
-
-	case "sdd-propose":
-		if run.ToolSuccessRate >= 0.9 {
-			return "Proposals being created from explorations correctly"
-		}
-		return "Proposal failures — exploration output may be insufficient"
-
-	case "sdd-tasks":
-		if run.ToolSuccessRate >= 0.9 {
-			return "Task breakdown succeeding — specs and designs well-structured"
-		}
-		return "Task breakdown failures — specs may be ambiguous"
-
-	case "sdd-init":
-		if run.ToolSuccessRate >= 0.9 {
-			return "Bootstrap executing correctly"
-		}
-		return "Bootstrap failures — check project configuration"
-
-	case "sdd-archive":
-		if run.ToolSuccessRate >= 0.9 {
-			return "Archiving completing correctly"
-		}
-		return "Archive failures — verify change artifacts are complete"
+		return fmt.Sprintf("All thresholds passed (%s)", strings.Join(parts, ", "))
 
 	default:
-		if run.ToolSuccessRate >= 0.9 {
-			return "Agent performing within normal parameters"
+		return "-"
+	}
+}
+
+// evaluateAgentContext returns a qualitative assessment of agent mission fulfillment.
+// Uses accuracy and sample size as signals — tool_success_rate is excluded because
+// it is always 1.0 in practice and provides no signal.
+func evaluateAgentContext(run store.BenchmarkRun) string {
+	acc := run.Accuracy
+	n := run.SampleSize
+
+	// For INSUFFICIENT_DATA, note we have limited evidence.
+	insufficientPrefix := ""
+	if run.Verdict == store.VerdictInsufficientData {
+		insufficientPrefix = "Limited data — "
+	}
+
+	highAcc := acc >= 0.99
+	goodAcc := acc >= 0.95
+
+	switch run.AgentID {
+	case "sdd-orchestrator":
+		if highAcc && n >= 50 {
+			return insufficientPrefix + "Coordinating effectively across agents"
+		} else if goodAcc {
+			return insufficientPrefix + "Coordination mostly effective — minor errors detected"
 		}
-		return "Performance below expected thresholds for this agent role"
+		return insufficientPrefix + "Coordination issues — orchestrator may need guidance"
+
+	case "sdd-apply":
+		if highAcc {
+			return insufficientPrefix + "Implementations landing correctly"
+		} else if goodAcc {
+			return insufficientPrefix + "Most implementations successful — some corrections needed"
+		}
+		return insufficientPrefix + "Implementation failures detected — review task definitions"
+
+	case "sdd-explore":
+		if highAcc && n >= 50 {
+			return insufficientPrefix + "Thorough exploration — investigations well-grounded"
+		} else if goodAcc {
+			return insufficientPrefix + "Adequate exploration — consider wider codebase coverage"
+		}
+		return insufficientPrefix + "Shallow or error-prone exploration"
+
+	case "sdd-verify":
+		if highAcc {
+			return insufficientPrefix + "Validation executing correctly — spec compliance confirmed"
+		} else if goodAcc {
+			return insufficientPrefix + "Validation mostly passing — some spec gaps detected"
+		}
+		return insufficientPrefix + "Validation failures — implementation may not match specs"
+
+	case "sdd-spec":
+		if highAcc {
+			return insufficientPrefix + "Specs being written correctly"
+		}
+		return insufficientPrefix + "Spec generation issues — review proposal inputs"
+
+	case "sdd-design":
+		if highAcc {
+			return insufficientPrefix + "Design artifacts generated correctly"
+		}
+		return insufficientPrefix + "Design generation issues — proposal may need more detail"
+
+	case "sdd-propose":
+		if highAcc {
+			return insufficientPrefix + "Proposals created correctly from explorations"
+		}
+		return insufficientPrefix + "Proposal failures — check exploration output quality"
+
+	case "sdd-tasks":
+		if highAcc {
+			return insufficientPrefix + "Task breakdown working correctly"
+		}
+		return insufficientPrefix + "Task breakdown issues — specs may be ambiguous"
+
+	case "sdd-init":
+		if highAcc {
+			return insufficientPrefix + "Bootstrap executing correctly"
+		}
+		return insufficientPrefix + "Bootstrap failures — check project configuration"
+
+	case "sdd-archive":
+		if highAcc {
+			return insufficientPrefix + "Archiving completing correctly"
+		}
+		return insufficientPrefix + "Archive failures — verify change artifacts are complete"
+
+	case "igris":
+		if highAcc {
+			return insufficientPrefix + "Conversational and coordination tasks completing successfully"
+		} else if goodAcc {
+			return insufficientPrefix + "Mostly effective — occasional errors in task handling"
+		}
+		return insufficientPrefix + "Elevated error rate — review recent task complexity"
+
+	default:
+		if highAcc {
+			return insufficientPrefix + "Agent performing within expected parameters"
+		} else if goodAcc {
+			return insufficientPrefix + "Mostly within parameters — minor issues detected"
+		}
+		return insufficientPrefix + "Performance below expected thresholds for this role"
 	}
 }
 
