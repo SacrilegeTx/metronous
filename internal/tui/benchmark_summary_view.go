@@ -57,6 +57,9 @@ func healthStyle(score float64) lipgloss.Style {
 	}
 }
 
+// clearRunErrMsg is sent after a short delay to clear the run error and restore the F5 hint.
+type clearRunErrMsg struct{}
+
 // BenchmarkSummaryModel is the Bubble Tea sub-model for the benchmark summary tab.
 type BenchmarkSummaryModel struct {
 	bs            store.BenchmarkStore
@@ -128,7 +131,18 @@ func (m BenchmarkSummaryModel) Update(msg tea.Msg) (BenchmarkSummaryModel, tea.C
 	case intraweekRunDoneMsg:
 		m.running = false
 		m.runErr = msg.Err
-		return m, m.fetchSummary()
+		cmds := []tea.Cmd{m.fetchSummary()}
+		if msg.Err != nil {
+			// Auto-clear the error after 4 seconds so F5 hint comes back.
+			cmds = append(cmds, tea.Tick(4*time.Second, func(t time.Time) tea.Msg {
+				return clearRunErrMsg{}
+			}))
+		}
+		return m, tea.Batch(cmds...)
+
+	case clearRunErrMsg:
+		m.runErr = nil
+		return m, nil
 
 	case BenchmarkSummaryDataMsg:
 		m.loading = false
