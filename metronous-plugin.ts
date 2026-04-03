@@ -549,20 +549,10 @@ export const plugin: Plugin = async ({ directory, client }) => {
             timestamp: now(),
           })
 
-          // Keep the session in memory so a resumed conversation (model switch,
-          // new message in same session) can accumulate cost correctly.
-          // Mark the idle time — a background sweep will evict after 30 min.
+          // Keep the session in memory indefinitely.
+          // The user may return to the same session after minutes, hours, or days.
+          // The map is reset naturally when OpenCode restarts — no manual eviction needed.
           state.lastIdleAt = Date.now()
-
-          // Sweep stale sessions: remove any that have been idle > 30 minutes.
-          const IDLE_TTL_MS = 30 * 60 * 1000
-          const nowMs = Date.now()
-          for (const [sid, s] of sessions.entries()) {
-            if (s.lastIdleAt > 0 && nowMs - s.lastIdleAt > IDLE_TTL_MS) {
-              log(`Evicting stale session ${sid} (idle for ${Math.round((nowMs - s.lastIdleAt) / 60000)} min)`)
-              sessions.delete(sid)
-            }
-          }
         }
 
         if (event.type === "session.error") {
