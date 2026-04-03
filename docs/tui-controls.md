@@ -1,6 +1,14 @@
 # TUI Controls and Navigation
 
-Metronous runs a five-tab terminal dashboard (TUI): Tracking, Benchmark Summary, Benchmark Detailed, Charts, and Config.
+Metronous runs a five-tab terminal dashboard (TUI):
+
+| # | Tab |
+|---|-----|
+| 1 | Benchmark Summary |
+| 2 | Benchmark Detailed |
+| 3 | Tracking |
+| 4 | Charts |
+| 5 | Config |
 
 ## Global keys (app level)
 - `q`: quit

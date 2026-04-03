@@ -682,8 +682,30 @@ func (m *AppModel) renderLanding() string {
 		BorderForeground(lipgloss.Color("240")).
 		Padding(0, 1)
 
+	// Version label top-right inside the frame.
+	versionLine := ""
+	if m.CurrentVersion != "" {
+		versionLabel := "v" + m.CurrentVersion
+		vStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+		if m.Width > 0 {
+			// Right-align within the available width (subtract frame borders+padding).
+			innerW := m.Width - 4
+			pad := innerW - lipgloss.Width(versionLabel)
+			if pad < 0 {
+				pad = 0
+			}
+			versionLine = strings.Repeat(" ", pad) + vStyle.Render(versionLabel)
+		} else {
+			versionLine = vStyle.Render(versionLabel)
+		}
+	}
+
 	// Use the frame width as a soft constraint.
-	content := strings.Join([]string{
+	contentParts := []string{}
+	if versionLine != "" {
+		contentParts = append(contentParts, versionLine)
+	}
+	contentParts = append(contentParts,
 		art,
 		"",
 		title,
@@ -693,7 +715,8 @@ func (m *AppModel) renderLanding() string {
 		strings.Join(menuLines, "\n"),
 		"",
 		footer,
-	}, "\n")
+	)
+	content := strings.Join(contentParts, "\n")
 
 	return frame.Render(content)
 }
