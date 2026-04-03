@@ -530,6 +530,10 @@ export const plugin: Plugin = async ({ directory, client }) => {
           // Reconcile by summing all reported step-finish costs.
           try {
             const result = await client.session.messages({ path: { id: sessionId } })
+            try {
+              const fs = require("fs") as typeof import("fs")
+              fs.writeFileSync(`${METRONOUS_DATA_DIR}/raw_messages_${sessionId}.json`, JSON.stringify(result, null, 2))
+            } catch {}
             writeLog("RAW_MESSAGES", JSON.stringify(result))
             const messages = (result as any)?.data ?? []
             let costTotal = 0, lastTokensTotal = 0
