@@ -1,8 +1,10 @@
+<p align="right">
+  <a href="https://github.com/kiosvantra/metronous/releases/latest">
+    <img src="https://img.shields.io/github/v/release/kiosvantra/metronous?style=flat-square&label=version&color=86a0ff" alt="Latest release"/>
+  </a>
+</p>
 <p align="center">
-  <span style="position: relative; display: inline-block;">
-    <span style="position: absolute; top: 0; right: 0; font-size: 12px; padding: 4px 8px; background: rgba(0,0,0,0.55); color: #fff; border-radius: 0 0 0 8px;">v0.9.0</span>
-    <img src="assets/logo.png" alt="Metronous" width="100%"/>
-  </span>
+  <img src="assets/logo.png" alt="Metronous" width="100%"/>
 </p>
 
 # Metronous
