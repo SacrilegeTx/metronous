@@ -1,8 +1,3 @@
-<p align="right">
-  <a href="https://github.com/kiosvantra/metronous/releases/latest">
-    <img src="https://img.shields.io/github/v/release/kiosvantra/metronous?style=flat-square&label=version&color=86a0ff" alt="Latest release"/>
-  </a>
-</p>
 <p align="center">
   <img src="assets/logo.png" alt="Metronous" width="100%"/>
 </p>
