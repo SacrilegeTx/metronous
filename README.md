@@ -45,9 +45,9 @@ Go 1.22+ is only required for source builds and `go install`.
 
 ### Support matrix
 
-- **Linux**: official install flow
+- **Linux**: official install flow (one command)
+- **macOS**: official install flow (one command)
 - **Windows**: experimental/manual
-- **macOS**: manual CLI only
 
 ### Linux (recommended — one command)
 
@@ -120,15 +120,17 @@ Run the elevated PowerShell session as the same Windows user account that runs O
 
 Windows support is currently experimental. The native service/install flow is still being hardened, so Linux is the only officially supported installer path.
 
-### macOS status
+### macOS (one command)
 
 ```bash
-go build -o metronous ./cmd/metronous
-./metronous init
-./metronous server --data-dir ~/.metronous/data --daemon-mode
+curl -fsSL https://github.com/kiosvantra/metronous/releases/latest/download/install.sh | bash
 ```
 
-macOS currently supports the CLI only. `metronous install`, automatic OpenCode patching, and automatic plugin installation are not supported on macOS.
+Same as Linux — downloads the latest release, verifies the checksum, installs the binary to `~/.local/bin`, and runs `metronous install` to set up the daemon and configure OpenCode automatically.
+
+Supports both Intel (amd64) and Apple Silicon (arm64).
+
+> Do not run with `sudo`. Must run as the same normal user that runs OpenCode.
 
 ### Windows service notes
 
