@@ -621,6 +621,8 @@ func renderDetailPanel(run store.BenchmarkRun, pricing map[string]float64, trend
 		renderScenario5(&sb, run, explanation)
 	case "keep":
 		renderScenario4(&sb, run, explanation)
+	default:
+		renderScenarioUnknown(&sb, run)
 	}
 
 	writeDetailField(&sb, "Context", clamp(evaluateAgentContext(run)))
@@ -828,12 +830,15 @@ func buildVerdictExplanation(run store.BenchmarkRun, pricing map[string]float64,
 	if run.Verdict == store.VerdictInsufficientData {
 		return VerdictExplanation{}
 	}
+	if pricing == nil {
+		return VerdictExplanation{}
+	}
 
-	currentPrice := pricing[run.Model]
-	recommendedPrice := pricing[run.RecommendedModel]
-	isCurrentFree := currentPrice == 0
+	currentPrice, hasCurrentPrice := pricing[run.Model]
+	recommendedPrice, hasRecommendedPrice := pricing[run.RecommendedModel]
+	isCurrentFree := hasCurrentPrice && currentPrice == 0
 	hasReliableCostData := run.TotalCostUSD > 0
-	roiActive := !isCurrentFree && hasReliableCostData
+	roiActive := hasCurrentPrice && currentPrice > 0 && hasReliableCostData
 
 	ex := VerdictExplanation{
 		RequiredQuality:     minAccuracy,
@@ -850,17 +855,22 @@ func buildVerdictExplanation(run store.BenchmarkRun, pricing map[string]float64,
 
 	if run.RecommendedModel != "" {
 		ex.RecommendedModel = store.NormalizeModelName(run.RecommendedModel)
-		ex.RecommendedCostLabel = formatEstimatedCostLabel(recommendedPrice)
+		if hasRecommendedPrice {
+			ex.RecommendedCostLabel = formatEstimatedCostLabel(recommendedPrice)
+		}
 	}
 
 	currentCostForImpact := currentPrice
-	if hasReliableCostData {
-		currentCostForImpact = run.TotalCostUSD
+	if hasReliableCostData && run.ROIScore > 0 {
+		// Compare costs at the same per-session scale:
+		// - recommendedPrice is configured per-session pricing
+		// - current cost is derived from ROI (accuracy / ROI = cost_per_session)
+		currentCostForImpact = run.Accuracy / run.ROIScore
 	}
 	if isCurrentFree {
 		currentCostForImpact = 0
 	}
-	if run.RecommendedModel != "" {
+	if run.RecommendedModel != "" && hasRecommendedPrice {
 		ex.CostImpactStr = formatCostImpact(currentCostForImpact, recommendedPrice)
 	}
 
@@ -869,13 +879,27 @@ func buildVerdictExplanation(run store.BenchmarkRun, pricing map[string]float64,
 		if isCurrentFree {
 			ex.IsFreeToPayTransition = true
 		} else if !hasReliableCostData {
+			// Deliberately grouped as cost-data-missing: both missing billing telemetry
+			// and incomplete pricing block reliable cost guidance for a paid model.
 			ex.FailureType = "cost-data-missing"
 			ex.IsInterimRec = true
 		}
 		return ex
 	}
 
-	if (run.Verdict == store.VerdictSwitch || run.Verdict == store.VerdictUrgentSwitch) && roiActive && run.ROIScore < minROI {
+	requiresSwitch := run.Verdict == store.VerdictSwitch || run.Verdict == store.VerdictUrgentSwitch
+	recommendedMaintainsQuality := run.Accuracy >= minAccuracy && run.RecommendedModel != ""
+	if requiresSwitch && run.ROIScore < minROI {
+		if !roiActive || !hasRecommendedPrice {
+			// Deliberately grouped as cost-data-missing: ROI-triggered switch cannot be
+			// explained reliably without both current and recommended cost inputs.
+			ex.FailureType = "cost-data-missing"
+			return ex
+		}
+		if !recommendedMaintainsQuality {
+			ex.FailureType = "keep"
+			return ex
+		}
 		if recommendedPrice > 0 && recommendedPrice < currentCostForImpact {
 			ex.FailureType = "cost-optimization"
 			ex.IsQualityConstrained = true
@@ -913,17 +937,25 @@ func formatQualityGap(current float64, required float64) string {
 }
 
 func formatCurrentCostLabel(run store.BenchmarkRun, pricing map[string]float64) string {
-	currentPrice := pricing[run.Model]
+	currentPrice, inPricing := pricing[run.Model]
+
+	// If model not in pricing table, we don't know its cost
+	if !inPricing {
+		if run.TotalCostUSD > 0 {
+			return fmt.Sprintf("$%.2f/session (actual)", run.TotalCostUSD)
+		}
+		return "unknown (no billing telemetry)"
+	}
+
+	// Model is in pricing table
 	if currentPrice == 0 {
 		return "free"
 	}
 	if run.TotalCostUSD > 0 {
 		return fmt.Sprintf("$%.2f/session (actual)", run.TotalCostUSD)
 	}
-	if currentPrice > 0 {
-		return fmt.Sprintf("$%.2f/session (estimated)", currentPrice)
-	}
-	return "unknown (no billing telemetry)"
+	// currentPrice > 0 is guaranteed at this point
+	return fmt.Sprintf("$%.2f/session (estimated)", currentPrice)
 }
 
 func formatEstimatedCostLabel(cost float64) string {
@@ -938,9 +970,9 @@ func renderScenario1(sb *strings.Builder, run store.BenchmarkRun, ex VerdictExpl
 	writeDetailField(sb, "Current", fmt.Sprintf("%s (%s)", store.NormalizeModelName(run.Model), ex.CurrentCostLabel))
 	writeDetailField(sb, "Threshold", fmt.Sprintf("%.0f%% accuracy", ex.RequiredQuality*100))
 	writeDetailField(sb, "Accuracy", fmt.Sprintf("%.1f%% (gap %s)", ex.CurrentQuality*100, ex.QualityGapStr))
-	writeDetailField(sb, "Best Option", fmt.Sprintf("🎯 %s", ex.RecommendedModel))
-	writeDetailField(sb, "Cost", fmt.Sprintf("%s (%s)", ex.RecommendedCostLabel, ex.CostImpactStr))
-	writeDetailField(sb, "Decision", "SWITCH — accept cost to meet quality requirement")
+	writeDetailField(sb, "Best Option", formatRecommendedModel(ex.RecommendedModel))
+	writeDetailField(sb, "Cost", formatRecommendedCost(ex.RecommendedCostLabel, ex.CostImpactStr))
+	writeDetailField(sb, "Decision", switchDecisionText(run.Verdict, "accept cost to meet quality requirement"))
 }
 
 func renderScenario2(sb *strings.Builder, run store.BenchmarkRun, ex VerdictExplanation) {
@@ -948,9 +980,9 @@ func renderScenario2(sb *strings.Builder, run store.BenchmarkRun, ex VerdictExpl
 	writeDetailField(sb, "Current", fmt.Sprintf("%s (%s)", store.NormalizeModelName(run.Model), ex.CurrentCostLabel))
 	writeDetailField(sb, "Threshold", fmt.Sprintf("%.0f%% accuracy", ex.RequiredQuality*100))
 	writeDetailField(sb, "Accuracy", fmt.Sprintf("%.1f%% (gap %s)", ex.CurrentQuality*100, ex.QualityGapStr))
-	writeDetailField(sb, "Best Option", fmt.Sprintf("🎯 %s", ex.RecommendedModel))
-	writeDetailField(sb, "Cost", fmt.Sprintf("%s (%s)", ex.RecommendedCostLabel, ex.CostImpactStr))
-	writeDetailField(sb, "Decision", "SWITCH — tier upgrade required")
+	writeDetailField(sb, "Best Option", formatRecommendedModel(ex.RecommendedModel))
+	writeDetailField(sb, "Cost", formatRecommendedCost(ex.RecommendedCostLabel, ex.CostImpactStr))
+	writeDetailField(sb, "Decision", switchDecisionText(run.Verdict, "tier upgrade required"))
 }
 
 func renderScenario3(sb *strings.Builder, run store.BenchmarkRun, ex VerdictExplanation) {
@@ -959,9 +991,9 @@ func renderScenario3(sb *strings.Builder, run store.BenchmarkRun, ex VerdictExpl
 	writeDetailField(sb, "Threshold", fmt.Sprintf("%.0f%% accuracy", ex.RequiredQuality*100))
 	writeDetailField(sb, "Accuracy", fmt.Sprintf("%.1f%% (gap %s)", ex.CurrentQuality*100, ex.QualityGapStr))
 	writeDetailField(sb, "ROI", fmt.Sprintf("%.2f (threshold %.2f)", ex.CurrentROI, ex.RequiredROI))
-	writeDetailField(sb, "Optimize", fmt.Sprintf("🎯 %s", ex.RecommendedModel))
-	writeDetailField(sb, "Cost", fmt.Sprintf("%s (%s)", ex.RecommendedCostLabel, ex.CostImpactStr))
-	writeDetailField(sb, "Decision", "SWITCH — reduce cost while preserving quality")
+	writeDetailField(sb, "Optimize", formatRecommendedModel(ex.RecommendedModel))
+	writeDetailField(sb, "Cost", formatRecommendedCost(ex.RecommendedCostLabel, ex.CostImpactStr))
+	writeDetailField(sb, "Decision", switchDecisionText(run.Verdict, "reduce cost while preserving quality"))
 }
 
 func renderScenario4(sb *strings.Builder, run store.BenchmarkRun, ex VerdictExplanation) {
@@ -981,10 +1013,51 @@ func renderScenario5(sb *strings.Builder, run store.BenchmarkRun, ex VerdictExpl
 	writeDetailField(sb, "Current", fmt.Sprintf("%s (%s)", store.NormalizeModelName(run.Model), ex.CurrentCostLabel))
 	writeDetailField(sb, "Threshold", fmt.Sprintf("%.0f%% accuracy", ex.RequiredQuality*100))
 	writeDetailField(sb, "Accuracy", fmt.Sprintf("%.1f%% (gap %s)", ex.CurrentQuality*100, ex.QualityGapStr))
-	writeDetailField(sb, "Interim", fmt.Sprintf("🎯 %s", ex.RecommendedModel))
-	writeDetailField(sb, "Cost", ex.RecommendedCostLabel)
-	writeDetailField(sb, "Decision", "SWITCH (temporary)")
+	writeDetailField(sb, "Interim", formatRecommendedModel(ex.RecommendedModel))
+	if ex.RecommendedCostLabel == "" {
+		writeDetailField(sb, "Cost", "unknown")
+	} else {
+		writeDetailField(sb, "Cost", ex.RecommendedCostLabel)
+	}
+	if run.Verdict == store.VerdictUrgentSwitch {
+		writeDetailField(sb, "Decision", "URGENT SWITCH (temporary)")
+	} else {
+		writeDetailField(sb, "Decision", "SWITCH (temporary)")
+	}
 	writeDetailField(sb, "Note", "Data pending — will optimize for cost after billing telemetry is available")
+}
+
+func renderScenarioUnknown(sb *strings.Builder, run store.BenchmarkRun) {
+	writeDetailField(sb, "Scenario", "Decision rationale unavailable")
+	writeDetailField(sb, "Current", store.NormalizeModelName(run.Model))
+	writeDetailField(sb, "Decision", string(run.Verdict))
+}
+
+func formatRecommendedModel(model string) string {
+	if model == "" {
+		return "N/A"
+	}
+	return fmt.Sprintf("🎯 %s", model)
+}
+
+func formatRecommendedCost(costLabel string, impactLabel string) string {
+	if costLabel == "" && impactLabel == "" {
+		return "unknown"
+	}
+	if costLabel == "" {
+		return impactLabel
+	}
+	if impactLabel == "" {
+		return costLabel
+	}
+	return fmt.Sprintf("%s (%s)", costLabel, impactLabel)
+}
+
+func switchDecisionText(verdict store.VerdictType, message string) string {
+	if verdict == store.VerdictUrgentSwitch {
+		return fmt.Sprintf("URGENT SWITCH — %s", message)
+	}
+	return fmt.Sprintf("SWITCH — %s", message)
 }
 
 // evaluateAgentContext returns a qualitative assessment of agent mission fulfillment.

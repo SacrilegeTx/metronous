@@ -130,8 +130,94 @@ func TestBuildVerdictExplanation_Scenario3_CostOptimization(t *testing.T) {
 	if !strings.Contains(detail, "✓ QUALITY SUFFICIENT — Cost Optimization Available") {
 		t.Fatalf("detail missing optimization header:\n%s", detail)
 	}
-	if !strings.Contains(detail, "saves $10.00/session") {
+	if !strings.Contains(detail, "saves $1.75/session") {
 		t.Fatalf("detail missing savings message:\n%s", detail)
+	}
+}
+
+func TestBuildVerdictExplanation_AccuracyEqualsThreshold_IsKeep(t *testing.T) {
+	run := store.BenchmarkRun{
+		Model:        "claude-sonnet-4-6",
+		Accuracy:     0.90,
+		ROIScore:     0.20,
+		Verdict:      store.VerdictKeep,
+		TotalCostUSD: 10,
+		RunAt:        time.Now(),
+	}
+	pricing := map[string]float64{"claude-sonnet-4-6": 10}
+
+	ex := buildVerdictExplanation(run, pricing, 0.90, 0.15)
+	if ex.FailureType != "keep" {
+		t.Fatalf("FailureType: got %q, want keep", ex.FailureType)
+	}
+}
+
+func TestBuildVerdictExplanation_HighROI_DoesNotOptimizeCost(t *testing.T) {
+	run := store.BenchmarkRun{
+		Model:            "claude-opus-4-5",
+		RecommendedModel: "claude-sonnet-4-6",
+		Accuracy:         0.94,
+		ROIScore:         0.30,
+		Verdict:          store.VerdictSwitch,
+		TotalCostUSD:     20,
+		RunAt:            time.Now(),
+	}
+	pricing := map[string]float64{
+		"claude-opus-4-5":   20,
+		"claude-sonnet-4-6": 10,
+	}
+
+	ex := buildVerdictExplanation(run, pricing, 0.90, 0.15)
+	if ex.FailureType != "keep" {
+		t.Fatalf("FailureType: got %q, want keep", ex.FailureType)
+	}
+}
+
+func TestBuildVerdictExplanation_ROIFailure_MissingRecommendedPricing_NotKeep(t *testing.T) {
+	run := store.BenchmarkRun{
+		Model:            "claude-opus-4-5",
+		RecommendedModel: "claude-sonnet-4-6",
+		Accuracy:         0.94,
+		ROIScore:         0.08,
+		Verdict:          store.VerdictSwitch,
+		TotalCostUSD:     20,
+		RunAt:            time.Now(),
+	}
+	pricing := map[string]float64{
+		"claude-opus-4-5": 20,
+	}
+
+	ex := buildVerdictExplanation(run, pricing, 0.90, 0.15)
+	if ex.FailureType == "keep" {
+		t.Fatalf("FailureType: got %q, expected non-keep when recommended pricing is missing", ex.FailureType)
+	}
+	if ex.FailureType != "cost-data-missing" {
+		t.Fatalf("FailureType: got %q, want cost-data-missing", ex.FailureType)
+	}
+}
+
+func TestRenderDetailPanel_CostDataMissing_NoGarbledRecommendedFields(t *testing.T) {
+	run := store.BenchmarkRun{
+		Model:            "claude-sonnet-4-6",
+		RecommendedModel: "",
+		Accuracy:         0.80,
+		Verdict:          store.VerdictSwitch,
+		TotalCostUSD:     0,
+		RunAt:            time.Now(),
+	}
+	pricing := map[string]float64{
+		"claude-sonnet-4-6": 10,
+	}
+
+	detail := renderDetailPanel(run, pricing, nil, 0.90, 0.15)
+	if strings.Contains(detail, "🎯 ") {
+		t.Fatalf("detail contains garbled recommended model field:\n%s", detail)
+	}
+	if strings.Contains(detail, " ()") {
+		t.Fatalf("detail contains garbled recommended cost field:\n%s", detail)
+	}
+	if !strings.Contains(detail, "N/A") {
+		t.Fatalf("detail missing fallback recommended label:\n%s", detail)
 	}
 }
 
