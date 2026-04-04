@@ -67,16 +67,19 @@ var detailLabelStyle = lipgloss.NewStyle().
 var f5KeyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("19")).Bold(true) // dark blue
 
 // benchColWidths / benchColNames describe the benchmark history table.
-// Columns: Time | Agent | Type | Accuracy | Avg Response | Verdict | → Model | Savings
+// Columns: Time | Agent | Model | Samples | Accuracy | Avg Response | Verdict | → Switch To | Savings
 // "Time" shows full date+time (YYYY-MM-DD HH:MM) so width is 17 to avoid truncation.
 var (
-	benchColWidths = []int{17, 16, 9, 10, 13, 18, 16, 8}
-	benchColNames  = []string{"Time", "Agent", "Type", "Accuracy", "Avg Response", "Verdict", "→ Model", "Savings"}
+	benchColWidths = []int{17, 14, 22, 8, 10, 13, 18, 16, 8}
+	benchColNames  = []string{"Time", "Agent", "Model", "Samples", "Accuracy", "Avg Response", "Verdict", "→ Switch To", "Savings"}
 )
 
 // verdictColIdx is the index of the Verdict column in benchColNames/benchColWidths.
 // Defined as a constant so the rendering code stays in sync with the column layout.
-const verdictColIdx = 5
+const verdictColIdx = 6
+
+// maxBenchmarkRows is the maximum number of rows visible at once (scroll window).
+const maxBenchmarkRows = 20
 
 // modelPricingSection mirrors the JSON structure of the "model_pricing" key in thresholds.json.
 type modelPricingSection struct {
@@ -113,8 +116,10 @@ type BenchmarkModel struct {
 	typeByID  map[string]string   // agentID → type label (primary/subagent/built-in/all)
 	trendByID map[string][]string // agentID → verdict trend (oldest first)
 	err       error
-	// cursor is the row index within the current cycle's agent list.
+	// cursor is the absolute row index within m.runs.
+	// offset is the first visible row index (scroll window).
 	cursor  int
+	offset  int
 	loading bool
 	// cycles is the ordered list of week-start times (newest first) discovered in the DB.
 	cycles []time.Time
@@ -219,6 +224,10 @@ func (m BenchmarkModel) Update(msg tea.Msg) (BenchmarkModel, tea.Cmd) {
 					m.cursor = 0
 				}
 			}
+			// Clamp offset.
+			if m.offset > m.cursor {
+				m.offset = m.cursor
+			}
 		}
 		return m, nil
 
@@ -235,6 +244,9 @@ func (m BenchmarkModel) Update(msg tea.Msg) (BenchmarkModel, tea.Cmd) {
 			// Move selection one row up within the current cycle.
 			if m.cursor > 0 {
 				m.cursor--
+				if m.cursor < m.offset {
+					m.offset = m.cursor
+				}
 			}
 			// Unfreeze detail so it follows the cursor.
 			m.detailFrozen = false
@@ -242,6 +254,9 @@ func (m BenchmarkModel) Update(msg tea.Msg) (BenchmarkModel, tea.Cmd) {
 			// Move selection one row down within the current cycle.
 			if m.cursor < len(m.runs)-1 {
 				m.cursor++
+				if m.cursor >= m.offset+maxBenchmarkRows {
+					m.offset = m.cursor - maxBenchmarkRows + 1
+				}
 			}
 			// Unfreeze detail so it follows the cursor.
 			m.detailFrozen = false
@@ -250,6 +265,7 @@ func (m BenchmarkModel) Update(msg tea.Msg) (BenchmarkModel, tea.Cmd) {
 			if m.cycleIndex < len(m.cycles)-1 {
 				m.cycleIndex++
 				m.cursor = 0
+				m.offset = 0
 				m.detailFrozen = false
 				return m, m.fetchRuns()
 			}
@@ -258,6 +274,7 @@ func (m BenchmarkModel) Update(msg tea.Msg) (BenchmarkModel, tea.Cmd) {
 			if m.cycleIndex > 0 {
 				m.cycleIndex--
 				m.cursor = 0
+				m.offset = 0
 				m.detailFrozen = false
 				return m, m.fetchRuns()
 			}
@@ -424,17 +441,16 @@ func (m BenchmarkModel) fetchRuns() tea.Cmd {
 			}
 		}
 
-		// Sort: agent type → agentID → model (alphabetical).
+		// Sort: agentID asc → SampleSize desc (most data first within each agent).
 		sort.Slice(page, func(i, j int) bool {
-			ti := agentTypeOrder(typeByID[page[i].AgentID])
-			tj := agentTypeOrder(typeByID[page[j].AgentID])
-			if ti != tj {
-				return ti < tj
-			}
 			if page[i].AgentID != page[j].AgentID {
 				return page[i].AgentID < page[j].AgentID
 			}
-			return page[i].Model < page[j].Model
+			// NO DATA placeholders go last within an agent group.
+			if isNoData(page[i]) != isNoData(page[j]) {
+				return !isNoData(page[i])
+			}
+			return page[i].SampleSize > page[j].SampleSize
 		})
 
 		// ── 6. Fetch verdict trends for each agent in the page (last 8 weeks) ─
@@ -491,11 +507,19 @@ func (m BenchmarkModel) View() string {
 	sb.WriteString("\n")
 	sb.WriteString(strings.Repeat("─", totalWidth(benchColWidths)) + "\n")
 
-	// Data rows — m.runs already contains only the current page (maxBenchmarkRows rows max).
-	// The cursor is a local index within this page.
-	for i, run := range m.runs {
-		agentType := m.typeByID[run.AgentID]
-		row := formatBenchmarkRow(run, agentType, m.pricing)
+	// Scroll indicator above if there are rows above the visible window.
+	if m.offset > 0 {
+		sb.WriteString(dimStyle.Render(fmt.Sprintf("  ↑ %d more above", m.offset)) + "\n")
+	}
+
+	// Data rows — render only the visible window [offset, offset+maxBenchmarkRows).
+	end := m.offset + maxBenchmarkRows
+	if end > len(m.runs) {
+		end = len(m.runs)
+	}
+	for i := m.offset; i < end; i++ {
+		run := m.runs[i]
+		row := formatBenchmarkRow(run, m.pricing)
 		baseStyle := lipgloss.NewStyle()
 		isNoDataRow := isNoData(run)
 		// For NO DATA rows: keep grey text, but if the cursor is on the row
@@ -509,9 +533,9 @@ func (m BenchmarkModel) View() string {
 			baseStyle = cursorStyle
 		}
 		// Render columns before Verdict without special colour.
-		// verdictColIdx = 5 (Time, Agent, Type, Accuracy, P95 Latency, Verdict, → Model, Savings)
+		// verdictColIdx = 6 (Time, Agent, Model, Samples, Accuracy, Avg Response, Verdict, → Switch To, Savings)
 		rendered := renderRow(row[:verdictColIdx], benchColWidths[:verdictColIdx], baseStyle)
-		// Verdict column: remove cursor background from this specific column.
+		// Verdict column: coloured independently.
 		var verdictCell string
 		if isNoDataRow {
 			verdictCell = baseStyle.Render(fmt.Sprintf("%-*s", benchColWidths[verdictColIdx], row[verdictColIdx]))
@@ -520,14 +544,20 @@ func (m BenchmarkModel) View() string {
 				fmt.Sprintf("%-*s", benchColWidths[verdictColIdx], row[verdictColIdx]))
 		}
 		rendered += verdictCell
-		// → Model column (index 6).
-		rendered += " " + baseStyle.Render(fmt.Sprintf("%-*s", benchColWidths[6], row[6]))
-		// Savings column (index 7).
+		// → Switch To column (index 7).
 		rendered += " " + baseStyle.Render(fmt.Sprintf("%-*s", benchColWidths[7], row[7]))
+		// Savings column (index 8).
+		rendered += " " + baseStyle.Render(fmt.Sprintf("%-*s", benchColWidths[8], row[8]))
 		// Write the row directly — do NOT re-wrap with baseStyle.Render() as that
 		// would strip the inner ANSI colour codes (verdict colour, etc.).
 		sb.WriteString(rendered)
 		sb.WriteString("\n")
+	}
+
+	// Scroll indicator below if there are rows below the visible window.
+	below := len(m.runs) - end
+	if below > 0 {
+		sb.WriteString(dimStyle.Render(fmt.Sprintf("  ↓ %d more below", below)) + "\n")
 	}
 
 	// Pagination footer: show cycle number (1-based from newest).
@@ -544,7 +574,7 @@ func (m BenchmarkModel) View() string {
 	} else {
 		cycleLabel = "cycle 1/1"
 	}
-	footerText := fmt.Sprintf("  %d agents  |  %s  (PgUp/PgDn to change cycle, ↑↓ to select, Enter to freeze detail)",
+	footerText := fmt.Sprintf("  %d rows  |  %s  (↑↓ scroll, PgUp/PgDn cycle, Enter freeze detail)",
 		len(m.runs), cycleLabel)
 	sb.WriteString(dimStyle.Render(footerText))
 	sb.WriteString("\n")
@@ -1191,26 +1221,26 @@ func isNoData(run store.BenchmarkRun) bool {
 }
 
 // formatBenchmarkRow converts a BenchmarkRun into display columns.
-// agentType is the type label for the Type column (primary/subagent/built-in/all).
+// Columns: Time | Agent | Model | Samples | Accuracy | Avg Response | Verdict | → Switch To | Savings
 // For NO_DATA rows, metric fields are rendered as "-".
-// Intraweek runs are labelled with "(IW)" suffix on the Time column to distinguish
-// them from the scheduled weekly run within the same cycle.
-func formatBenchmarkRow(run store.BenchmarkRun, agentType string, pricing map[string]float64) []string {
-	if agentType == "" {
-		agentType = "-"
-	}
-
+// Intraweek runs are labelled with "(IW)" suffix on the Time column.
+func formatBenchmarkRow(run store.BenchmarkRun, pricing map[string]float64) []string {
 	// Handle placeholder rows (agent discovered but no runs yet).
 	if isNoData(run) {
-		return []string{"-", run.AgentID, agentType, "-", "-", "NO DATA", "-", "-"}
+		return []string{"-", run.AgentID, "-", "-", "-", "-", "NO DATA", "-", "-"}
 	}
 
 	date := run.RunAt.Local().Format("2006-01-02 15:04")
-	// Append "(IW)" marker for intraweek runs so the cycle view clearly shows
-	// which runs were triggered manually vs the scheduled Sunday run.
+	// Append "(IW)" marker for intraweek runs.
 	if run.RunKind == store.RunKindIntraweek {
 		date += " (IW)"
 	}
+
+	model := run.Model
+	if model == "" {
+		model = "-"
+	}
+	samples := fmt.Sprintf("%d", run.SampleSize)
 
 	accuracy := fmt.Sprintf("%.1f%%", run.Accuracy*100)
 	// Use AvgTurnMs (clean turn latency from complete events only).
@@ -1219,24 +1249,24 @@ func formatBenchmarkRow(run store.BenchmarkRun, agentType string, pricing map[st
 	if turnMs <= 0 {
 		turnMs = run.P95LatencyMs
 	}
-	var p95 string
+	var avgResp string
 	if turnMs <= 0 {
-		p95 = "0.0s"
+		avgResp = "0.0s"
 	} else {
-		p95 = fmt.Sprintf("%.1fs", turnMs/1000)
+		avgResp = fmt.Sprintf("%.1fs", turnMs/1000)
 	}
 
-	// → Model column: show RecommendedModel only for SWITCH/URGENT_SWITCH with a non-empty value.
-	recommendedModel := "-"
+	// → Switch To column: show RecommendedModel only for SWITCH/URGENT_SWITCH.
+	switchTo := "-"
 	if run.RecommendedModel != "" &&
 		(run.Verdict == store.VerdictSwitch || run.Verdict == store.VerdictUrgentSwitch) {
-		recommendedModel = run.RecommendedModel
+		switchTo = run.RecommendedModel
 	}
 
 	// Savings column.
 	_, savingsStr := computeSavings(run.Model, run.RecommendedModel, run.Verdict, pricing)
 
-	return []string{date, run.AgentID, agentType, accuracy, p95, string(run.Verdict), recommendedModel, savingsStr}
+	return []string{date, run.AgentID, model, samples, accuracy, avgResp, string(run.Verdict), switchTo, savingsStr}
 }
 
 // computeSavings returns the savings ratio (0.0–1.0) and a formatted string
