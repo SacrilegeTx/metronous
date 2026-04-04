@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/kiosvantra/metronous/internal/config"
 	"github.com/kiosvantra/metronous/internal/discovery"
 	"github.com/kiosvantra/metronous/internal/store"
 )
@@ -139,6 +140,9 @@ type BenchmarkModel struct {
 	// runErr holds the error (if any) from the most recent F5 run.
 	// Cleared when the next F5 run starts.
 	runErr error
+	// Threshold defaults used for explainability classification/rendering.
+	minAccuracy float64
+	minROI      float64
 }
 
 // NewBenchmarkModel creates a BenchmarkModel wired to the given BenchmarkStore.
@@ -147,13 +151,16 @@ type BenchmarkModel struct {
 // workDir is used for project-level agent discovery; pass os.Getwd() from the caller.
 // r is an optional IntraweekRunner; pass nil to disable F5 manual runs.
 func NewBenchmarkModel(bs store.BenchmarkStore, dataDir string, workDir string, r IntraweekRunner) BenchmarkModel {
+	defaults := config.DefaultThresholdValues().Defaults
 	return BenchmarkModel{
-		bs:      bs,
-		loading: true,
-		pricing: loadModelPricing(dataDir),
-		agents:  discovery.DiscoverAgents(workDir),
-		workDir: workDir,
-		runner:  r,
+		bs:          bs,
+		loading:     true,
+		pricing:     loadModelPricing(dataDir),
+		agents:      discovery.DiscoverAgents(workDir),
+		workDir:     workDir,
+		runner:      r,
+		minAccuracy: defaults.MinAccuracy,
+		minROI:      defaults.MinROIScore,
 	}
 }
 
@@ -180,6 +187,11 @@ func (m BenchmarkModel) Update(msg tea.Msg) (BenchmarkModel, tea.Cmd) {
 			}),
 			m.fetchRuns(),
 		)
+
+	case ConfigReloadedMsg:
+		m.minAccuracy = msg.Thresholds.Defaults.MinAccuracy
+		m.minROI = msg.Thresholds.Defaults.MinROIScore
+		return m, nil
 
 	case BenchmarkDataMsg:
 		m.loading = false
@@ -538,7 +550,7 @@ func (m BenchmarkModel) View() string {
 			detailRun = m.runs[m.cursor]
 			trend = m.trendByID[detailRun.AgentID]
 		}
-		sb.WriteString(renderDetailPanel(detailRun, m.pricing, trend))
+		sb.WriteString(renderDetailPanel(detailRun, m.pricing, trend, m.minAccuracy, m.minROI))
 	}
 
 	return sb.String()
@@ -546,7 +558,7 @@ func (m BenchmarkModel) View() string {
 
 // renderDetailPanel renders the decision rationale panel for the selected run.
 // trend is the verdict history for the agent (oldest first); pass nil if unavailable.
-func renderDetailPanel(run store.BenchmarkRun, pricing map[string]float64, trend []string) string {
+func renderDetailPanel(run store.BenchmarkRun, pricing map[string]float64, trend []string, minAccuracy float64, minROI float64) string {
 	var sb strings.Builder
 
 	// Prevent terminal auto-wrapping from pushing/popping the main table out of
@@ -594,6 +606,23 @@ func renderDetailPanel(run store.BenchmarkRun, pricing map[string]float64, trend
 	writeDetailField(&sb, "Samples", fmt.Sprintf("%d events", run.SampleSize))
 	sb.WriteString("\n")
 	writeDetailField(&sb, "Reason", reason)
+
+	explanation := buildVerdictExplanation(run, pricing, minAccuracy, minROI)
+	switch explanation.FailureType {
+	case "quality-gap":
+		if explanation.IsFreeToPayTransition {
+			renderScenario1(&sb, run, explanation)
+		} else {
+			renderScenario2(&sb, run, explanation)
+		}
+	case "cost-optimization":
+		renderScenario3(&sb, run, explanation)
+	case "cost-data-missing":
+		renderScenario5(&sb, run, explanation)
+	case "keep":
+		renderScenario4(&sb, run, explanation)
+	}
+
 	writeDetailField(&sb, "Context", clamp(evaluateAgentContext(run)))
 
 	// Trend line: show last N verdicts with direction indicator.
@@ -765,6 +794,197 @@ func renderReason(run store.BenchmarkRun) string {
 	default:
 		return "-"
 	}
+}
+
+// VerdictExplanation holds structured context for decision explainability rendering.
+type VerdictExplanation struct {
+	// Current state.
+	RequiredQuality    float64
+	CurrentQuality     float64
+	RequiredROI        float64
+	CurrentROI         float64
+	CurrentCostLabel   string
+	IsCurrentModelFree bool
+
+	// Scenario classification.
+	FailureType           string
+	IsFreeToPayTransition bool
+	IsQualityConstrained  bool
+	IsInterimRec          bool
+
+	// Recommendation context.
+	RecommendedModel     string
+	RecommendedQuality   string
+	RecommendedCostLabel string
+
+	// Impact.
+	QualityGapStr       string
+	CostImpactStr       string
+	HasReliableCostData bool
+}
+
+// buildVerdictExplanation classifies verdict explainability scenarios from run data.
+func buildVerdictExplanation(run store.BenchmarkRun, pricing map[string]float64, minAccuracy float64, minROI float64) VerdictExplanation {
+	if run.Verdict == store.VerdictInsufficientData {
+		return VerdictExplanation{}
+	}
+
+	currentPrice := pricing[run.Model]
+	recommendedPrice := pricing[run.RecommendedModel]
+	isCurrentFree := currentPrice == 0
+	hasReliableCostData := run.TotalCostUSD > 0
+	roiActive := !isCurrentFree && hasReliableCostData
+
+	ex := VerdictExplanation{
+		RequiredQuality:     minAccuracy,
+		CurrentQuality:      run.Accuracy,
+		RequiredROI:         minROI,
+		CurrentROI:          run.ROIScore,
+		CurrentCostLabel:    formatCurrentCostLabel(run, pricing),
+		IsCurrentModelFree:  isCurrentFree,
+		RecommendedModel:    run.RecommendedModel,
+		RecommendedQuality:  fmt.Sprintf("≥%.0f%% (meets threshold)", minAccuracy*100),
+		QualityGapStr:       formatQualityGap(run.Accuracy, minAccuracy),
+		HasReliableCostData: hasReliableCostData,
+	}
+
+	if run.RecommendedModel != "" {
+		ex.RecommendedModel = store.NormalizeModelName(run.RecommendedModel)
+		ex.RecommendedCostLabel = formatEstimatedCostLabel(recommendedPrice)
+	}
+
+	currentCostForImpact := currentPrice
+	if hasReliableCostData {
+		currentCostForImpact = run.TotalCostUSD
+	}
+	if isCurrentFree {
+		currentCostForImpact = 0
+	}
+	if run.RecommendedModel != "" {
+		ex.CostImpactStr = formatCostImpact(currentCostForImpact, recommendedPrice)
+	}
+
+	if run.Accuracy < minAccuracy {
+		ex.FailureType = "quality-gap"
+		if isCurrentFree {
+			ex.IsFreeToPayTransition = true
+		} else if !hasReliableCostData {
+			ex.FailureType = "cost-data-missing"
+			ex.IsInterimRec = true
+		}
+		return ex
+	}
+
+	if (run.Verdict == store.VerdictSwitch || run.Verdict == store.VerdictUrgentSwitch) && roiActive && run.ROIScore < minROI {
+		if recommendedPrice > 0 && recommendedPrice < currentCostForImpact {
+			ex.FailureType = "cost-optimization"
+			ex.IsQualityConstrained = true
+			return ex
+		}
+	}
+
+	ex.FailureType = "keep"
+	return ex
+}
+
+func formatCostImpact(currentCost float64, recommendedCost float64) string {
+	if currentCost <= 0 {
+		if recommendedCost <= 0 {
+			return "was $0"
+		}
+		return fmt.Sprintf("was $0 (+$%.2f/session)", recommendedCost)
+	}
+	delta := recommendedCost - currentCost
+	if delta > 0 {
+		return fmt.Sprintf("+$%.2f/session", delta)
+	}
+	if delta < 0 {
+		return fmt.Sprintf("saves $%.2f/session", -delta)
+	}
+	return "$0/session change"
+}
+
+func formatQualityGap(current float64, required float64) string {
+	diff := (current - required) * 100
+	if diff >= 0 {
+		return fmt.Sprintf("+%.0f%%", diff)
+	}
+	return fmt.Sprintf("%.0f%%", diff)
+}
+
+func formatCurrentCostLabel(run store.BenchmarkRun, pricing map[string]float64) string {
+	currentPrice := pricing[run.Model]
+	if currentPrice == 0 {
+		return "free"
+	}
+	if run.TotalCostUSD > 0 {
+		return fmt.Sprintf("$%.2f/session (actual)", run.TotalCostUSD)
+	}
+	if currentPrice > 0 {
+		return fmt.Sprintf("$%.2f/session (estimated)", currentPrice)
+	}
+	return "unknown (no billing telemetry)"
+}
+
+func formatEstimatedCostLabel(cost float64) string {
+	if cost <= 0 {
+		return "unknown"
+	}
+	return fmt.Sprintf("$%.2f/session (estimated)", cost)
+}
+
+func renderScenario1(sb *strings.Builder, run store.BenchmarkRun, ex VerdictExplanation) {
+	writeDetailField(sb, "Scenario", "⚠ QUALITY INSUFFICIENT (Free Model)")
+	writeDetailField(sb, "Current", fmt.Sprintf("%s (%s)", store.NormalizeModelName(run.Model), ex.CurrentCostLabel))
+	writeDetailField(sb, "Threshold", fmt.Sprintf("%.0f%% accuracy", ex.RequiredQuality*100))
+	writeDetailField(sb, "Accuracy", fmt.Sprintf("%.1f%% (gap %s)", ex.CurrentQuality*100, ex.QualityGapStr))
+	writeDetailField(sb, "Best Option", fmt.Sprintf("🎯 %s", ex.RecommendedModel))
+	writeDetailField(sb, "Cost", fmt.Sprintf("%s (%s)", ex.RecommendedCostLabel, ex.CostImpactStr))
+	writeDetailField(sb, "Decision", "SWITCH — accept cost to meet quality requirement")
+}
+
+func renderScenario2(sb *strings.Builder, run store.BenchmarkRun, ex VerdictExplanation) {
+	writeDetailField(sb, "Scenario", "⚠ QUALITY INSUFFICIENT (Paid Model)")
+	writeDetailField(sb, "Current", fmt.Sprintf("%s (%s)", store.NormalizeModelName(run.Model), ex.CurrentCostLabel))
+	writeDetailField(sb, "Threshold", fmt.Sprintf("%.0f%% accuracy", ex.RequiredQuality*100))
+	writeDetailField(sb, "Accuracy", fmt.Sprintf("%.1f%% (gap %s)", ex.CurrentQuality*100, ex.QualityGapStr))
+	writeDetailField(sb, "Best Option", fmt.Sprintf("🎯 %s", ex.RecommendedModel))
+	writeDetailField(sb, "Cost", fmt.Sprintf("%s (%s)", ex.RecommendedCostLabel, ex.CostImpactStr))
+	writeDetailField(sb, "Decision", "SWITCH — tier upgrade required")
+}
+
+func renderScenario3(sb *strings.Builder, run store.BenchmarkRun, ex VerdictExplanation) {
+	writeDetailField(sb, "Scenario", "✓ QUALITY SUFFICIENT — Cost Optimization Available")
+	writeDetailField(sb, "Current", fmt.Sprintf("%s (%s)", store.NormalizeModelName(run.Model), ex.CurrentCostLabel))
+	writeDetailField(sb, "Threshold", fmt.Sprintf("%.0f%% accuracy", ex.RequiredQuality*100))
+	writeDetailField(sb, "Accuracy", fmt.Sprintf("%.1f%% (gap %s)", ex.CurrentQuality*100, ex.QualityGapStr))
+	writeDetailField(sb, "ROI", fmt.Sprintf("%.2f (threshold %.2f)", ex.CurrentROI, ex.RequiredROI))
+	writeDetailField(sb, "Optimize", fmt.Sprintf("🎯 %s", ex.RecommendedModel))
+	writeDetailField(sb, "Cost", fmt.Sprintf("%s (%s)", ex.RecommendedCostLabel, ex.CostImpactStr))
+	writeDetailField(sb, "Decision", "SWITCH — reduce cost while preserving quality")
+}
+
+func renderScenario4(sb *strings.Builder, run store.BenchmarkRun, ex VerdictExplanation) {
+	if ex.IsCurrentModelFree {
+		writeDetailField(sb, "Scenario", "✓ QUALITY SUFFICIENT + FREE")
+	} else {
+		writeDetailField(sb, "Scenario", "✓ QUALITY SUFFICIENT")
+	}
+	writeDetailField(sb, "Current", fmt.Sprintf("%s (%s)", store.NormalizeModelName(run.Model), ex.CurrentCostLabel))
+	writeDetailField(sb, "Threshold", fmt.Sprintf("%.0f%% accuracy", ex.RequiredQuality*100))
+	writeDetailField(sb, "Accuracy", fmt.Sprintf("%.1f%% (gap %s)", ex.CurrentQuality*100, ex.QualityGapStr))
+	writeDetailField(sb, "Decision", "✅ KEEP")
+}
+
+func renderScenario5(sb *strings.Builder, run store.BenchmarkRun, ex VerdictExplanation) {
+	writeDetailField(sb, "Scenario", "⚠ QUALITY INSUFFICIENT (Cost Data Unavailable)")
+	writeDetailField(sb, "Current", fmt.Sprintf("%s (%s)", store.NormalizeModelName(run.Model), ex.CurrentCostLabel))
+	writeDetailField(sb, "Threshold", fmt.Sprintf("%.0f%% accuracy", ex.RequiredQuality*100))
+	writeDetailField(sb, "Accuracy", fmt.Sprintf("%.1f%% (gap %s)", ex.CurrentQuality*100, ex.QualityGapStr))
+	writeDetailField(sb, "Interim", fmt.Sprintf("🎯 %s", ex.RecommendedModel))
+	writeDetailField(sb, "Cost", ex.RecommendedCostLabel)
+	writeDetailField(sb, "Decision", "SWITCH (temporary)")
+	writeDetailField(sb, "Note", "Data pending — will optimize for cost after billing telemetry is available")
 }
 
 // evaluateAgentContext returns a qualitative assessment of agent mission fulfillment.
