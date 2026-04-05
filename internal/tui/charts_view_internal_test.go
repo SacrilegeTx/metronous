@@ -86,10 +86,10 @@ func TestChartsFetchRanksMonthlyCards(t *testing.T) {
 		{Day: monthStart, Model: "delta", TotalCostUSD: 4},
 	}}
 	bs := mockChartsBenchmarkStore{runs: []store.BenchmarkRun{
-		{AgentID: "build", Model: "alpha", RunAt: monthStart.AddDate(0, 0, 1), SampleSize: 100, Accuracy: 0.94, P95LatencyMs: 100, Verdict: store.VerdictKeep},
-		{AgentID: "sdd-orchestrator", Model: "beta", RunAt: monthStart.AddDate(0, 0, 2), SampleSize: 100, Accuracy: 0.92, P95LatencyMs: 200, Verdict: store.VerdictKeep},
-		{AgentID: "sdd-explore", Model: "gamma", RunAt: monthStart.AddDate(0, 0, 3), SampleSize: 100, Accuracy: 0.88, P95LatencyMs: 500, Verdict: store.VerdictSwitch},
-		{AgentID: "sdd-init", Model: "delta", RunAt: monthStart.AddDate(0, 0, 4), SampleSize: 100, Accuracy: 0.80, P95LatencyMs: 1000, Verdict: store.VerdictUrgentSwitch},
+		{AgentID: "build", Model: "alpha", RunAt: monthStart.AddDate(0, 0, 1), SampleSize: 100, Accuracy: 0.94, AvgTurnMs: 100, Verdict: store.VerdictKeep, RunKind: store.RunKindWeekly, Status: store.RunStatusActive},
+		{AgentID: "sdd-orchestrator", Model: "beta", RunAt: monthStart.AddDate(0, 0, 2), SampleSize: 100, Accuracy: 0.92, AvgTurnMs: 200, Verdict: store.VerdictKeep, RunKind: store.RunKindWeekly, Status: store.RunStatusActive},
+		{AgentID: "sdd-explore", Model: "gamma", RunAt: monthStart.AddDate(0, 0, 3), SampleSize: 100, Accuracy: 0.88, AvgTurnMs: 500, Verdict: store.VerdictSwitch, RunKind: store.RunKindWeekly, Status: store.RunStatusActive},
+		{AgentID: "sdd-init", Model: "delta", RunAt: monthStart.AddDate(0, 0, 4), SampleSize: 100, Accuracy: 0.80, AvgTurnMs: 1000, Verdict: store.VerdictUrgentSwitch, RunKind: store.RunKindWeekly, Status: store.RunStatusActive},
 	}}
 
 	m := NewChartsModel(es, bs)

@@ -310,7 +310,16 @@ func aggregateChartsModelStats(runs []store.BenchmarkRun, minROI float64) map[st
 		if run.Model == "" || run.RunAt.IsZero() {
 			continue
 		}
-		model := store.NormalizeModelName(run.Model)
+		// Fix 1: skip superseded runs — only active runs contribute to scores.
+		if run.Status != store.RunStatusActive {
+			continue
+		}
+		// Fix 4: prefer RawModel (with provider prefix) for consistency with other views.
+		rawName := run.RawModel
+		if rawName == "" {
+			rawName = run.Model
+		}
+		model := store.NormalizeModelName(rawName)
 		s := stats[model]
 		if s == nil {
 			s = &chartModelStats{Model: model}
@@ -326,7 +335,9 @@ func aggregateChartsModelStats(runs []store.BenchmarkRun, minROI float64) map[st
 			}
 			s.TotalSamples += samples
 			s.SumAccuracy += run.Accuracy * float64(samples)
-			s.SumP95 += run.P95LatencyMs * float64(samples)
+			// Fix 2: use AvgTurnMs (mean turn duration from complete events) instead of
+			// the deprecated P95LatencyMs alias.
+			s.SumP95 += run.AvgTurnMs * float64(samples)
 			if run.ROIScore > 0 {
 				s.SumROI += run.ROIScore * float64(samples)
 				s.ROISamples += samples
@@ -353,7 +364,7 @@ func aggregateChartsModelStats(runs []store.BenchmarkRun, minROI float64) map[st
 			runROI = run.ROIScore
 		}
 		s.roleWeightSum += float64(samples)
-		weightedScore := computeHealthScore(run.Accuracy, run.P95LatencyMs, run.Verdict, runROI, minROI) * weight
+		weightedScore := computeHealthScore(run.Accuracy, run.AvgTurnMs, run.Verdict, runROI, minROI) * weight
 		s.roleWeightedScore += weightedScore * float64(samples)
 	}
 
@@ -1180,7 +1191,16 @@ func (m ChartsModel) fetchChartData() tea.Cmd {
 			if err != nil {
 				return ChartsDataMsg{MonthStart: monthStart, Err: err}
 			}
-			stats = aggregateChartsModelStats(runs, minROI)
+			// Fix 3: score cards (Performance/Responsibility) must only consider
+			// weekly runs — consistent with verdict trend and Benchmark History Summary.
+			// Use make() to avoid aliasing the backing array of runs.
+			weeklyRuns := make([]store.BenchmarkRun, 0, len(runs))
+			for _, r := range runs {
+				if r.RunKind == store.RunKindWeekly {
+					weeklyRuns = append(weeklyRuns, r)
+				}
+			}
+			stats = aggregateChartsModelStats(weeklyRuns, minROI)
 			performanceSelected = rankChartsByScoreForMonth(stats, totals, func(s *chartModelStats) float64 { return s.HealthScore }, 3)
 			responsibilitySelected = rankChartsByScoreForMonth(stats, totals, func(s *chartModelStats) float64 { return s.ResponsibilityScore }, 3)
 			if len(performanceSelected) == 0 {
