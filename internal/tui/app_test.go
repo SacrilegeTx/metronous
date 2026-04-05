@@ -485,6 +485,81 @@ func TestConfigViewSaveReloadKeymapPreset(t *testing.T) {
 	}
 }
 
+// TestConfigViewSaveKeepsPresetAcrossTabSwitch verifies that toggling the
+// keymap preset to nvim, saving via ctrl+s, switching to another tab, and
+// returning to Config keeps the nvim preset and shows a Saved status message.
+func TestConfigViewSaveKeepsPresetAcrossTabSwitch(t *testing.T) {
+	tdir := t.TempDir()
+	configPath := filepath.Join(tdir, "thresholds.json")
+
+	// Build an app model wired to a real config path (no stores needed).
+	m := tui.NewAppModel(nil, nil, configPath, filepath.Join(tdir, "data"), "", "test")
+	app := &m
+
+	// Ensure View() renders the Config tab instead of the loading placeholder.
+	updated, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = updated.(*tui.AppModel)
+
+	// Jump straight to the Config tab.
+	updated, _ = sendKey(app, "5")
+	app = updated.(*tui.AppModel)
+
+	// Move cursor down to the keymap preset row.
+	for i := 0; i < 10; i++ {
+		updated, _ = sendKey(app, "j")
+		app = updated.(*tui.AppModel)
+	}
+
+	// Toggle the keymap preset using '='.
+	updated, _ = sendKey(app, "=")
+	app = updated.(*tui.AppModel)
+	if got := tui.GetAppKeymapPresetForTest(app); got != config.KeymapPresetNvim {
+		t.Fatalf("expected keymap preset to be nvim after toggle, got %q", got)
+	}
+
+	// Save via ctrl+s at the app level.
+	updated, cmd := sendSpecialKey(app, tea.KeyCtrlS)
+	app = updated.(*tui.AppModel)
+	if cmd == nil {
+		t.Fatal("expected save command from ctrl+s")
+	}
+	msg := cmd()
+	updated, _ = app.Update(msg)
+	app = updated.(*tui.AppModel)
+
+	// Config view should show a saved status message.
+	view := app.View()
+	if !strings.Contains(view, "Saved") {
+		t.Fatalf("expected 'Saved' in Config view after ctrl+s, got: %q", view)
+	}
+
+	// Switch to another tab (Benchmark Summary).
+	updated, _ = sendKey(app, "1")
+	app = updated.(*tui.AppModel)
+	if app.CurrentTab != tui.TabBenchmarkSummary {
+		t.Fatalf("expected TabBenchmarkSummary after switching away from Config, got %d", app.CurrentTab)
+	}
+
+	// Switch back to Config.
+	updated, _ = sendKey(app, "5")
+	app = updated.(*tui.AppModel)
+	if app.CurrentTab != tui.TabConfig {
+		t.Fatalf("expected TabConfig after switching back, got %d", app.CurrentTab)
+	}
+
+	// After tab round-trip, the Config view should still show nvim preset and Saved.
+	view = app.View()
+	if !strings.Contains(view, "Nvim (hjkl navigation)") {
+		t.Fatalf("expected Config view to keep nvim preset after tab switch, got: %q", view)
+	}
+	if !strings.Contains(view, "Saved") {
+		t.Fatalf("expected 'Saved' status to remain visible after tab switch, got: %q", view)
+	}
+	if got := tui.GetAppKeymapPresetForTest(app); got != config.KeymapPresetNvim {
+		t.Fatalf("expected keymap preset to remain nvim after tab switch, got %q", got)
+	}
+}
+
 // When the nvim keymap preset is enabled, hjkl should control editing inside
 // the Config tab instead of switching tabs at the app shell level.
 func TestConfigViewNvimPresetDoesNotSwitchTabsOnHjkl(t *testing.T) {
