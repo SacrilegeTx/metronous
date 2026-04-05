@@ -1341,7 +1341,13 @@ func formatBenchmarkRow(run store.BenchmarkRun, pricing map[string]float64) []st
 		switchTo = run.RecommendedModel
 	}
 
-	return []string{run.AgentID, model, samples, accuracy, avgResp, string(run.Verdict), switchTo}
+	// Verdict column: show "CHANGED" for superseded runs, otherwise use calculated verdict.
+	verdictText := string(run.Verdict)
+	if run.Status == store.RunStatusSuperseded {
+		verdictText = "CHANGED"
+	}
+
+	return []string{run.AgentID, model, samples, accuracy, avgResp, verdictText, switchTo}
 }
 
 // computeSavings returns the savings ratio (0.0–1.0) and a formatted string
