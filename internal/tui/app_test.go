@@ -425,8 +425,12 @@ func TestConfigViewSaveReloadKeymapPreset(t *testing.T) {
 	m := tui.NewAppModel(nil, nil, configPath, filepath.Join(tdir, "data"), "", "test")
 	app := &m
 
+	// Ensure View() renders the Config tab instead of the loading placeholder.
+	updated, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = updated.(*tui.AppModel)
+
 	// Jump straight to the Config tab.
-	updated, _ := sendKey(app, "5")
+	updated, _ = sendKey(app, "5")
 	app = updated.(*tui.AppModel)
 
 	// Move cursor down to the keymap preset row.
@@ -453,6 +457,12 @@ func TestConfigViewSaveReloadKeymapPreset(t *testing.T) {
 	updated, _ = app.Update(msg)
 	app = updated.(*tui.AppModel)
 
+	// After ctrl+s, the Config view should show a saved status message.
+	view := app.View()
+	if !strings.Contains(view, "Saved") {
+		t.Fatalf("expected 'Saved' in Config view after ctrl+s, got: %q", view)
+	}
+
 	// Reload via ctrl+r at the app level (reads from disk).
 	updated, cmd = sendSpecialKey(app, tea.KeyCtrlR)
 	app = updated.(*tui.AppModel)
@@ -462,6 +472,12 @@ func TestConfigViewSaveReloadKeymapPreset(t *testing.T) {
 	msg = cmd()
 	updated, _ = app.Update(msg)
 	app = updated.(*tui.AppModel)
+
+	// After reload, the Config view should show a reload status message.
+	view = app.View()
+	if !strings.Contains(view, "Reload") {
+		t.Fatalf("expected 'Reload' in Config view after ctrl+r, got: %q", view)
+	}
 
 	// After a full save+reload round-trip, the effective preset should stay nvim.
 	if got := tui.GetAppKeymapPresetForTest(app); got != config.KeymapPresetNvim {
