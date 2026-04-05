@@ -430,6 +430,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
+			// When already on the first tab, treating a left-arrow press as a
+			// full tab switch causes the dashboard to clear and appear blank until
+			// another view change happens. Make it a no-op instead.
+			if m.CurrentTab == TabBenchmarkSummary {
+				return m, nil
+			}
 			oldTab := m.CurrentTab
 			if m.CurrentTab > 0 {
 				m.CurrentTab--
@@ -450,6 +456,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.CurrentTab = Tab(m.landingCursor)
 					}
 				}
+				return m, nil
+			}
+			// When already on the last tab, treating a right-arrow press as a
+			// full tab switch causes the dashboard to clear and appear blank until
+			// another view change happens. Make it a no-op instead.
+			if int(m.CurrentTab) >= numTabs-1 {
 				return m, nil
 			}
 			oldTab := m.CurrentTab

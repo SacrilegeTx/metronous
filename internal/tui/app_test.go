@@ -223,6 +223,46 @@ func TestAppArrowKeyDoesNotWrapBeyondBounds(t *testing.T) {
 	}
 }
 
+func TestAppArrowSameTabPressIsNoopAndDoesNotClear(t *testing.T) {
+	m := newTestApp(t)
+
+	// Give the app a window size so View() renders a full frame.
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = updated.(*tui.AppModel)
+
+	// Open the first tab from the landing screen.
+	updated, _ = sendKey(m, "1")
+	m = updated.(*tui.AppModel)
+
+	// First render should consume the pending clear.
+	_ = m.View()
+	if tui.GetAppNeedsClearForTest(m) {
+		t.Fatalf("expected needsClear to be false after initial render")
+	}
+
+	// Pressing left on the first tab should be a pure no-op, not trigger a clear.
+	updated, _ = sendSpecialKey(m, tea.KeyLeft)
+	m = updated.(*tui.AppModel)
+	if tui.GetAppNeedsClearForTest(m) {
+		t.Fatalf("expected needsClear to remain false after left arrow on first tab")
+	}
+
+	// Jump to the last tab and render once to consume its clear.
+	updated, _ = sendKey(m, "5")
+	m = updated.(*tui.AppModel)
+	_ = m.View()
+	if tui.GetAppNeedsClearForTest(m) {
+		t.Fatalf("expected needsClear to be false after render on last tab")
+	}
+
+	// Pressing right on the last tab should also be a no-op without clearing.
+	updated, _ = sendSpecialKey(m, tea.KeyRight)
+	m = updated.(*tui.AppModel)
+	if tui.GetAppNeedsClearForTest(m) {
+		t.Fatalf("expected needsClear to remain false after right arrow on last tab")
+	}
+}
+
 func TestAppWindowResize(t *testing.T) {
 	m := newTestApp(t)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})

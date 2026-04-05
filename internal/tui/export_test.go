@@ -192,6 +192,13 @@ func GetAppKeymapPresetForTest(m *AppModel) config.KeymapPreset {
 	return m.config.thresholds.EffectiveKeymapPreset()
 }
 
+// GetAppNeedsClearForTest exposes the internal needsClear flag so tests can
+// assert that same-tab navigation key presses are treated as no-ops and do
+// not trigger a full screen clear.
+func GetAppNeedsClearForTest(m *AppModel) bool {
+	return m.needsClear
+}
+
 // TrendDirection exposes the internal trendDirection function for testing.
 func TrendDirection(verdicts []string) string {
 	return trendDirection(verdicts)
