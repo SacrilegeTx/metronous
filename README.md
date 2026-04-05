@@ -171,8 +171,8 @@ The dashboard has five tabs (press the number key to switch):
 
 | # | Tab | Description |
 |---|-----|-------------|
-| 1 | **Benchmark Summary** | Aggregated per-agent/model table. Shows weighted accuracy, avg response time, last cost, health score (0–100), and last verdict. Press `F5` to run an intraweek benchmark now. |
-| 2 | **Benchmark Detailed** | Per-run history grouped into Sunday-bounded run cycles. Press `Enter` to freeze/unfreeze the detail panel. PgUp/PgDn to navigate cycles. |
+| 1 | **Benchmark History Summary** | Weighted historical view of all (agent, model) pairs active in the last 4 weekly cycles. Cascade sort: active model first (marked `●`), superseded models below. Verdict shown only for the active model. |
+| 2 | **Benchmark Detailed** | Per-run history grouped into Sunday-bounded run cycles. Press `Enter` to freeze/unfreeze the detail panel. PgUp/PgDn to navigate cycles. Press `F5` to trigger an intraweek benchmark run. |
 | 3 | **Tracking** | Real-time session stream (last 20 sessions, refreshes every 2s). Press `Enter` on a session to open the Session Timeline popup showing per-event cost breakdown. |
 | 4 | **Charts** | Monthly cost chart by model (log scale, stacked bars) with a day tooltip. Also shows Performance and Responsibility top-3 cards. `←`/`→` to navigate months, `k`/`l` or mouse to move the day cursor. |
 | 5 | **Config** | Edit performance thresholds. Changes are saved to `~/.metronous/thresholds.json` and propagated live to the benchmark engine. |
@@ -202,7 +202,7 @@ Key behaviors:
 ### Manual benchmark
 
 ```bash
-# Via TUI: press F5 on the Benchmark Summary tab
+# Via TUI: press F5 on the Benchmark Detailed tab
 # Via CLI:
 METRONOUS_DATA_DIR=~/.metronous/data go run cmd/run-benchmark/main.go
 ```

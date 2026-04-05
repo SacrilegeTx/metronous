@@ -136,12 +136,15 @@ The TUI and CLI read both SQLite files directly (no HTTP layer). The daemon keep
 ## Data Flow: Benchmark Pipeline
 
 ```
-Trigger (weekly cron or F5 intraweek)
+Trigger (weekly cron or F5 intraweek from Benchmark Detailed tab)
     │
     ▼
 Runner.run()
     │
     ├── discoverAgents() ─── QueryEvents() filtered to non-error events
+    │
+    ├── readActiveModelFromConfig() ─── reads ~/.config/opencode/opencode.json
+    │       determines currently configured model per agent
     │
     └── for each agentID:
             │
@@ -156,6 +159,11 @@ Runner.run()
                     │       PromptTokens, CompletionTokens, TotalCostUSD,
                     │       SessionCount, ROIScore
                     │
+                    ├── assignRunStatus()
+                    │       model == activeModel → run_status = 'active'
+                    │       otherwise           → run_status = 'superseded'
+                    │       (fallback: highest event count if agent not in config)
+                    │
                     ├── DecisionEngine.Evaluate()
                     │       EvaluateRulesWithPricing() → VerdictType
                     │       BuildReasonWithPricing() → human reason string
@@ -166,6 +174,8 @@ Runner.run()
                             (accuracy-first, then ROI, then avg turn time)
 
 After all agents:
+    ├── MarkSupersededRuns() → updates prior 'active' rows to 'superseded'
+    │       when the active model has changed since the previous cycle
     ├── GenerateArtifact() → ~/.metronous/artifacts/<timestamp>.json
     └── BenchmarkStore.SaveRun() → benchmark.db (one row per agentID/model pair)
 ```
@@ -241,13 +251,13 @@ This matches provider billing because each `step-finish` reports the cost of one
 
 The TUI uses Bubble Tea and is composed of five sub-models rendered as numbered tabs:
 
-| # | Model | File |
-|---|-------|------|
-| 1 | `BenchmarkSummaryModel` | `benchmark_summary_view.go` |
-| 2 | `BenchmarkDetailedModel` | `benchmark_view.go` |
-| 3 | `TrackingModel` | `tracking_view.go` |
-| 4 | `ChartsModel` | `charts_view.go` |
-| 5 | `ConfigModel` | `config_view.go` |
+| # | Tab Name | Model | File |
+|---|----------|-------|------|
+| 1 | **Benchmark History Summary** | `BenchmarkSummaryModel` | `benchmark_summary_view.go` |
+| 2 | **Benchmark Detailed** | `BenchmarkDetailedModel` | `benchmark_view.go` |
+| 3 | **Tracking** | `TrackingModel` | `tracking_view.go` |
+| 4 | **Charts** | `ChartsModel` | `charts_view.go` |
+| 5 | **Config** | `ConfigModel` | `config_view.go` |
 
 Tab switching is handled by `app.go`. All tabs except Config refresh on a 2-second tick from the SQLite stores.
 
@@ -323,9 +333,11 @@ metadata         JSON
 ```sql
 run_at            DATETIME NOT NULL,
 agent_id          TEXT NOT NULL,
-model             TEXT NOT NULL,
-window_days       INTEGER,
+model             TEXT NOT NULL,   -- normalized model name (provider prefix stripped)
+raw_model         TEXT,            -- full provider-prefixed name (e.g. opencode/claude-sonnet-4-6)
 run_kind          TEXT,            -- weekly | intraweek
+run_status        TEXT,            -- active | superseded
+window_days       INTEGER,
 window_start      DATETIME,
 window_end        DATETIME,
 accuracy          REAL,

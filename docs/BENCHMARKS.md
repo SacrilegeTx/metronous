@@ -28,8 +28,13 @@ This document describes exactly how Metronous computes metrics, assigns verdicts
   - [Per-agent overrides](#per-agent-overrides)
   - [Model pricing](#model-pricing)
 - [Benchmark Run Types](#benchmark-run-types)
+- [Active Model Determination](#active-model-determination)
+- [Run Status](#run-status)
 - [Per-model evaluation](#per-model-evaluation)
 - [Best alternative model selection](#best-alternative-model-selection)
+- [Verdict Trend](#verdict-trend)
+- [Time Display](#time-display)
+- [Raw Model Field](#raw-model-field)
 - [Deprecated fields](#deprecated-fields)
 
 ---
@@ -191,7 +196,7 @@ When the verdict is `SWITCH` or `URGENT_SWITCH`, the engine first tries `bestAlt
 
 ## Health Score
 
-The health score is a composite 0–100 value displayed in the Benchmark Summary tab. It combines three signals:
+The health score is a composite 0–100 value displayed in the Benchmark History Summary tab. It combines three signals:
 
 ```
 HealthScore = AccuracyPart + VerdictPart + ROIPart
@@ -319,9 +324,42 @@ Free models skip ROI and cost checks in the decision engine. They can still rece
 | Type | Trigger | Window |
 |------|---------|--------|
 | `weekly` | Sunday 02:00 local (cron `"0 0 2 * * 0"`) | Last 7 days from `now` |
-| `intraweek` | F5 in Benchmark Summary tab | From `last_run_at + 1ms` to `now` (falls back to 7 days if no prior run) |
+| `intraweek` | `F5` in **Benchmark Detailed** tab | From `last_run_at + 1ms` to `now` (falls back to 7 days if no prior run) |
 
-Both types use the same `Runner.run()` implementation and produce identical `BenchmarkRun` rows in `benchmark.db`, tagged with `run_kind`.
+Both types use the same `Runner.run()` implementation and produce identical `BenchmarkRun` rows in `benchmark.db`, tagged with `run_kind`. Intraweek runs are useful for getting up-to-date metrics mid-week without waiting for the Sunday schedule.
+
+---
+
+---
+
+## Active Model Determination
+
+At the time each benchmark run executes, the runner determines which model is currently active for each agent by reading `~/.config/opencode/opencode.json`.
+
+- The model configured for the agent in `opencode.json` at benchmark time is marked `run_status = 'active'`.
+- All other models benchmarked in the same cycle (i.e., models that appeared in the event window but are no longer configured) receive `run_status = 'superseded'`.
+- **Fallback**: if the agent is not found in `opencode.json` (e.g., a custom agent not declared there), the runner falls back to a heuristic: the model with the most events in the evaluation window is treated as the active model.
+
+This per-run determination is performed at write time: the active model is stamped into the `benchmark_runs` row as it is saved.
+
+### Cross-cycle superseding (`MarkSupersededRuns`)
+
+When a new run completes for a given agent, the runner also calls `MarkSupersededRuns`: any previous `active` run for that agent whose model differs from the newly active model is updated to `run_status = 'superseded'`. This ensures that across cycles, only the run that reflects the current configured model carries `active` status.
+
+---
+
+## Run Status
+
+Each row in `benchmark_runs` has a `run_status` field with one of two values:
+
+| Value | Meaning |
+|-------|---------|
+| `active` | This model is currently configured for the agent in `opencode.json`. Its metrics are used for verdict display, health score, and the Benchmark History Summary view. |
+| `superseded` | This model was active in a previous cycle but has since been replaced. It is shown in the TUI with a `—` in the verdict column and does not drive SWITCH/KEEP decisions. |
+
+**TUI display implications**:
+- In the **Benchmark History Summary** tab, the `●` marker indicates the active model row. Verdict is shown only for that row; superseded rows show `—`.
+- In the **Benchmark Detailed** tab, superseded rows are labeled `CHANGED` in the status column to indicate that the agent has since moved to a different model.
 
 ---
 
@@ -331,7 +369,42 @@ Each benchmark run evaluates every **distinct model** used by an agent separatel
 
 - `opencode/claude-sonnet-4-6` and `opencode/claude-haiku-4-5` produce separate rows for the same agent
 - If an agent switched models mid-window, both models are evaluated independently
-- The Benchmark Summary tab shows one row per `(agent, model)` pair
+- The **Benchmark History Summary** tab shows one row per `(agent, model)` pair, but only for pairs active in the last 4 weekly cycles
+
+---
+
+## Verdict Trend
+
+The **verdict trend** shows the last 5 verdicts for a given (agent, model) pair, computed from **weekly runs only** (`run_kind = 'weekly'`). Intraweek runs are excluded from the trend to avoid distorting it with mid-cycle snapshots.
+
+- The trend is displayed as a sequence of verdict symbols (e.g., `K K K S K` for KEEP/SWITCH).
+- `CHANGED` appears in the trend when two consecutive active runs for the same agent used **different models**. This signals that the agent switched models between cycles.
+- Only runs where `run_status = 'active'` contribute to the trend; superseded runs are excluded.
+
+---
+
+## Time Display
+
+All response time values in the TUI are displayed in **humanized format** rather than raw milliseconds or seconds. The format adapts to the magnitude of the duration:
+
+| Duration range | Format example |
+|----------------|----------------|
+| ≥ 1 hour | `5h 11m` |
+| ≥ 1 minute | `24m 15s` |
+| ≥ 1 second | `42.3s` |
+| < 1 second | `850ms` |
+
+This applies to all columns showing average or percentile turn times (e.g., `Avg`, `P95`) in both the Benchmark History Summary and Benchmark Detailed tabs.
+
+---
+
+## Raw Model Field
+
+Each `benchmark_runs` row stores a `raw_model` field that preserves the full provider-prefixed model name as emitted by the plugin (e.g., `opencode/claude-sonnet-4-6`).
+
+- The `raw_model` value is shown verbatim in the **Decision Rationale** panel (the detail panel in Benchmark Detailed tab) to give exact model identification.
+- Table columns in both benchmark tabs show the **normalized** model name (prefix stripped, e.g., `claude-sonnet-4-6`) for readability.
+- Normalization is performed by `NormalizeModelName()`, which strips the provider prefix (everything up to and including the last `/`) from the model string.
 
 ---
 
