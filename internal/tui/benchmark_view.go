@@ -78,6 +78,31 @@ var (
 // Defined as a constant so the rendering code stays in sync with the column layout.
 const verdictColIdx = 5
 
+// formatDuration converts a duration in milliseconds to a human-readable string.
+// Rules:
+//   - ms <= 0        → "0.0s"
+//   - ms < 60000     → "42.3s"
+//   - ms < 3600000   → "24m 15s"
+//   - ms >= 3600000  → "1h 23m"
+func formatDuration(ms float64) string {
+	if ms <= 0 {
+		return "0.0s"
+	}
+	if ms < 60_000 {
+		return fmt.Sprintf("%.1fs", ms/1000)
+	}
+	if ms < 3_600_000 {
+		totalSec := int(ms / 1000)
+		mins := totalSec / 60
+		secs := totalSec % 60
+		return fmt.Sprintf("%dm %ds", mins, secs)
+	}
+	totalMin := int(ms / 60_000)
+	hours := totalMin / 60
+	mins := totalMin % 60
+	return fmt.Sprintf("%dh %dm", hours, mins)
+}
+
 // maxBenchmarkRows is the maximum number of rows visible at once (scroll window).
 const maxBenchmarkRows = 15
 
@@ -910,7 +935,7 @@ func renderReason(run store.BenchmarkRun) string {
 		var parts []string
 		parts = append(parts, fmt.Sprintf("accuracy=%.1f%%", run.Accuracy*100))
 		if run.AvgTurnMs > 0 {
-			parts = append(parts, fmt.Sprintf("avg_response=%.1fs", run.AvgTurnMs/1000))
+			parts = append(parts, fmt.Sprintf("avg_response=%s", formatDuration(run.AvgTurnMs)))
 		}
 		if run.ROIScore > 0 {
 			parts = append(parts, fmt.Sprintf("roi=%.2f", run.ROIScore))
@@ -1329,12 +1354,7 @@ func formatBenchmarkRow(run store.BenchmarkRun, pricing map[string]float64) []st
 	if turnMs <= 0 {
 		turnMs = run.P95LatencyMs
 	}
-	var avgResp string
-	if turnMs <= 0 {
-		avgResp = "0.0s"
-	} else {
-		avgResp = fmt.Sprintf("%.1fs", turnMs/1000)
-	}
+	avgResp := formatDuration(turnMs)
 
 	// → Switch To column: show RecommendedModel only for SWITCH/URGENT_SWITCH.
 	switchTo := "-"

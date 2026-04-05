@@ -226,7 +226,7 @@ func (m BenchmarkSummaryModel) Update(msg tea.Msg) (BenchmarkSummaryModel, tea.C
 //
 // Model display: table column shows the normalized name (provider prefix stripped) via
 // formatSummaryRow(). The raw provider-prefixed name is preserved in summaryRow.RawModel
-// and shown as a dim secondary line below active rows in View().
+// for use in the Agent History Summary detail panel below the table.
 func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 	if m.bs == nil {
 		return nil
@@ -700,15 +700,6 @@ func (m *BenchmarkSummaryModel) View() string {
 
 		sb.WriteString(rendered)
 		sb.WriteString("\n")
-
-		// For the active model row, show the full provider-prefixed name as a dim
-		// secondary line so users can see the exact identifier sent to the API.
-		if row.IsActive && row.RawModel != "" {
-			providerLine := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(
-				fmt.Sprintf("  %s", row.RawModel))
-			sb.WriteString(providerLine)
-			sb.WriteString("\n")
-		}
 	}
 
 	// Footer.
@@ -739,7 +730,7 @@ func (m *BenchmarkSummaryModel) View() string {
 		writeDetailField(&sb, "Model", r.Model)
 		writeDetailField(&sb, "Runs", fmt.Sprintf("%d benchmark run(s)", r.Runs))
 		writeDetailField(&sb, "Accuracy", fmt.Sprintf("%.1f%%  (weighted avg)", r.AvgAccuracy*100))
-		writeDetailField(&sb, "Avg Response", fmt.Sprintf("%.1fs  (weighted avg)", r.AvgTurnMs/1000))
+		writeDetailField(&sb, "Avg Response", fmt.Sprintf("%s  (weighted avg)", formatDuration(r.AvgTurnMs)))
 		writeDetailField(&sb, "Cost", fmt.Sprintf("$%.4f  (from last verdict run)", r.TotalCostUSD))
 		writeDetailField(&sb, "Health", fmt.Sprintf("%.0f / 100", r.HealthScore))
 		writeDetailField(&sb, "Verdict", string(r.LastVerdict))
@@ -763,7 +754,7 @@ func (m *BenchmarkSummaryModel) View() string {
 func formatSummaryRow(r summaryRow) []string {
 	runs := fmt.Sprintf("%d", r.Runs)
 	accuracy := fmt.Sprintf("%.1f%%", r.AvgAccuracy*100)
-	p95 := fmt.Sprintf("%.1fs", r.AvgTurnMs/1000)
+	p95 := formatDuration(r.AvgTurnMs)
 	cost := fmt.Sprintf("$%.4f", r.TotalCostUSD)
 	health := fmt.Sprintf("%.0f", r.HealthScore)
 	verdict := string(r.LastVerdict)
