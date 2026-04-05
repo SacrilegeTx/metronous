@@ -192,8 +192,10 @@ type modelMetrics struct {
 //
 // ArtifactPath, RunKind, WindowStart, and WindowEnd are filled in by the caller.
 func (r *Runner) processAgentAllModels(ctx context.Context, agentID string, start, end time.Time, windowDays int, runAt time.Time) ([]agentResult, error) {
-	// 1. Fetch all events for the agent in the window.
-	events, err := benchmark.FetchEventsForWindow(ctx, r.eventStore, agentID, start, end)
+	// 1. Fetch ALL historical events for the agent (no time window).
+	// Metrics (accuracy, latency, ROI) and SampleSize are computed from the
+	// full event history per (agent, model), not just the current week.
+	events, err := benchmark.FetchEventsForWindow(ctx, r.eventStore, agentID, time.Time{}, time.Time{})
 	if err != nil {
 		return nil, fmt.Errorf("fetch events for %q: %w", agentID, err)
 	}
