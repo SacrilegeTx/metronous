@@ -587,6 +587,16 @@ func (m BenchmarkModel) View() string {
 		end = len(m.runs)
 	}
 	for i := m.offset; i < end; i++ {
+		// Insert a faint divider between agent groups so that contiguous
+		// rows for the same agent are visually grouped together.
+		if i > m.offset {
+			prev := m.runs[i-1]
+			if prev.AgentID != m.runs[i].AgentID {
+				divider := strings.Repeat("\u2500", totalWidth(benchColWidths))
+				sb.WriteString(dimStyle.Render(divider) + "\n")
+			}
+		}
+
 		run := m.runs[i]
 		row := formatBenchmarkRow(run, m.pricing)
 		baseStyle := lipgloss.NewStyle()

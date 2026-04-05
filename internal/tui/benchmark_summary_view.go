@@ -656,6 +656,17 @@ func (m *BenchmarkSummaryModel) View() string {
 
 	for i, row := range visible {
 		absIdx := offset + i
+
+		// Insert a faint divider between agent groups so that contiguous
+		// rows for the same agent are visually grouped together.
+		if absIdx > 0 {
+			prev := m.rows[absIdx-1]
+			if prev.AgentID != row.AgentID {
+				divider := strings.Repeat("\u2500", totalWidth(summaryColWidths))
+				sb.WriteString(dimStyle.Render(divider) + "\n")
+			}
+		}
+
 		baseStyle := lipgloss.NewStyle()
 		isInactive := !row.IsActive
 		if isInactive {
