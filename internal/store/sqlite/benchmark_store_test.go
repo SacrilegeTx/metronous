@@ -1015,3 +1015,134 @@ func TestSaveRunDefaultsRunKindToWeekly(t *testing.T) {
 		t.Errorf("RunKind: got %q, want %q (default should be weekly)", got.RunKind, store.RunKindWeekly)
 	}
 }
+
+// TestMarkSupersededRuns verifies that older intraweek runs of the same model are marked as superseded
+// when a newer run for that model is created in the same cycle.
+func TestMarkSupersededRuns(t *testing.T) {
+	ctx := context.Background()
+	bs := newTestBenchmarkStore(t)
+
+	// Setup: create multiple intraweek runs for the same agent, same model, in the same cycle
+	agentID := "test-agent"
+	model := "claude-sonnet-4"
+
+	// Sunday midnight (cycle start)
+	cycleStart := time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC)
+	cycleEnd := cycleStart.AddDate(0, 0, 7)
+
+	// Create three runs at different times within the cycle, all with the same model
+	times := []time.Time{
+		cycleStart.Add(1 * time.Hour), // 01:00 UTC
+		cycleStart.Add(3 * time.Hour), // 03:00 UTC
+		cycleStart.Add(6 * time.Hour), // 06:00 UTC (newest)
+	}
+
+	for i, runAt := range times {
+		run := sampleRun(agentID, store.VerdictKeep)
+		run.RunAt = runAt
+		run.Model = model
+		run.RunKind = store.RunKindIntraweek
+		run.WindowStart = cycleStart
+		run.WindowEnd = cycleEnd
+
+		if err := bs.SaveRun(ctx, run); err != nil {
+			t.Fatalf("SaveRun[%d]: %v", i, err)
+		}
+	}
+
+	// Verify all three are initially 'active'
+	latestRun, err := bs.GetLatestRun(ctx, agentID)
+	if err != nil {
+		t.Fatalf("GetLatestRun before MarkSuperseded: %v", err)
+	}
+	if latestRun == nil {
+		t.Fatal("GetLatestRun returned nil")
+	}
+	if latestRun.Status != store.RunStatusActive {
+		t.Errorf("Latest run status: got %q, want %q", latestRun.Status, store.RunStatusActive)
+	}
+
+	// Call MarkSupersededRuns for the newest run
+	newestRunAt := times[2] // 06:00 UTC
+	if err := bs.MarkSupersededRuns(ctx, agentID, newestRunAt, model, cycleStart, cycleEnd); err != nil {
+		t.Fatalf("MarkSupersededRuns: %v", err)
+	}
+
+	// Fetch all runs for this agent+model and verify statuses
+	allRuns, err := bs.GetRuns(ctx, agentID, 10)
+	if err != nil {
+		t.Fatalf("GetRuns: %v", err)
+	}
+
+	if len(allRuns) != 3 {
+		t.Fatalf("Expected 3 runs, got %d", len(allRuns))
+	}
+
+	// Check that the two older runs are now marked 'superseded'
+	// (sorted by run_at DESC, so [0] is newest, [1] and [2] are older)
+	if allRuns[0].RunAt != times[2] {
+		t.Errorf("Newest run at wrong position: got %v, want %v", allRuns[0].RunAt, times[2])
+	}
+	if allRuns[0].Status != store.RunStatusActive {
+		t.Errorf("Newest run status: got %q, want %q", allRuns[0].Status, store.RunStatusActive)
+	}
+
+	if allRuns[1].Status != store.RunStatusSuperseded {
+		t.Errorf("Older run[1] status: got %q, want %q", allRuns[1].Status, store.RunStatusSuperseded)
+	}
+
+	if allRuns[2].Status != store.RunStatusSuperseded {
+		t.Errorf("Older run[2] status: got %q, want %q", allRuns[2].Status, store.RunStatusSuperseded)
+	}
+}
+
+// TestMarkSupersededRunsOnlyAffectsSameModel verifies that MarkSupersededRuns only marks
+// runs of the same model as superseded (not other models).
+func TestMarkSupersededRunsOnlyAffectsSameModel(t *testing.T) {
+	ctx := context.Background()
+	bs := newTestBenchmarkStore(t)
+
+	agentID := "multi-model-agent"
+	cycleStart := time.Date(2026, 4, 5, 0, 0, 0, 0, time.UTC)
+	cycleEnd := cycleStart.AddDate(0, 0, 7)
+	runAt := cycleStart.Add(2 * time.Hour)
+
+	// Create two runs at the same time with different models
+	models := []string{"claude-sonnet-4", "claude-haiku-4-5"}
+	for _, model := range models {
+		run := sampleRun(agentID, store.VerdictKeep)
+		run.RunAt = runAt
+		run.Model = model
+		run.RunKind = store.RunKindIntraweek
+		run.WindowStart = cycleStart
+		run.WindowEnd = cycleEnd
+
+		if err := bs.SaveRun(ctx, run); err != nil {
+			t.Fatalf("SaveRun for %s: %v", model, err)
+		}
+	}
+
+	// Mark superseded for just the sonnet model
+	if err := bs.MarkSupersededRuns(ctx, agentID, runAt, models[0], cycleStart, cycleEnd); err != nil {
+		t.Fatalf("MarkSupersededRuns: %v", err)
+	}
+
+	// Fetch all runs and verify that only the sonnet model is active (no older runs to supersede),
+	// while the haiku model is unchanged
+	allRuns, err := bs.GetRuns(ctx, agentID, 10)
+	if err != nil {
+		t.Fatalf("GetRuns: %v", err)
+	}
+
+	if len(allRuns) != 2 {
+		t.Fatalf("Expected 2 runs, got %d", len(allRuns))
+	}
+
+	for _, run := range allRuns {
+		// Both should be 'active' because MarkSupersededRuns only affects the same model,
+		// and these are the first runs (no older runs to supersede)
+		if run.Status != store.RunStatusActive {
+			t.Errorf("Run for model %s: status got %q, want %q", run.Model, run.Status, store.RunStatusActive)
+		}
+	}
+}
