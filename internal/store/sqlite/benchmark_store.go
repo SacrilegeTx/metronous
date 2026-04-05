@@ -75,6 +75,22 @@ const addRunStatusColumn = `ALTER TABLE benchmark_runs ADD COLUMN run_status TEX
 // addRawModelColumn adds the raw_model column to store un-normalized model names with provider prefixes.
 const addRawModelColumn = `ALTER TABLE benchmark_runs ADD COLUMN raw_model TEXT NOT NULL DEFAULT ''`
 
+// markHistoricalSupersededRuns marks older runs (not the most recent per agent+model) as superseded.
+// This is a one-time data migration that fixes historical data where all runs were marked 'active'.
+// The migration is idempotent: runs already marked 'superseded' are not re-processed, and it uses
+// a deterministic approach (rank by run_at DESC per agent+model) to find the "most recent" run.
+const markHistoricalSupersededRuns = `
+UPDATE benchmark_runs
+SET run_status = 'superseded'
+WHERE run_status = 'active'
+  AND (agent_id, model, run_at) NOT IN (
+    -- Find the most recent run_at for each (agent_id, model) pair
+    SELECT agent_id, model, MAX(run_at)
+    FROM benchmark_runs
+    WHERE run_status = 'active'
+    GROUP BY agent_id, model
+  )`
+
 // BenchmarkStore is a SQLite-backed implementation of store.BenchmarkStore.
 type BenchmarkStore struct {
 	writeDB *sql.DB
@@ -132,6 +148,15 @@ func applyAddColumnMigration(ctx context.Context, db *sql.DB, stmt, colName stri
 	return nil
 }
 
+// applyDataMigration executes a data migration (UPDATE/INSERT/DELETE).
+// It is idempotent by design: the query should only affect rows that need migration.
+func applyDataMigration(ctx context.Context, db *sql.DB, stmt, name string) error {
+	if _, err := db.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("apply %s data migration: %w", name, err)
+	}
+	return nil
+}
+
 // ApplyBenchmarkMigrations creates all tables and indexes for benchmark.db,
 // then applies any additive column migrations for existing databases.
 // It is idempotent and safe to call at startup.
@@ -160,6 +185,14 @@ func ApplyBenchmarkMigrations(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 	}
+
+	// Apply data migrations (after all columns exist).
+	// markHistoricalSupersededRuns is idempotent: it only affects runs with status='active'
+	// and marks older ones per (agent_id, model) as 'superseded'. Safe to re-run.
+	if err := applyDataMigration(ctx, db, markHistoricalSupersededRuns, "mark_historical_superseded_runs"); err != nil {
+		return err
+	}
+
 	return nil
 }
 

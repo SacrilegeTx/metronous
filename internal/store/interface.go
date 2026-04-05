@@ -429,13 +429,13 @@ type BenchmarkStore interface {
 	// [since, until) (inclusive start, exclusive end), ordered by run_at DESC.
 	QueryRunsInWindow(ctx context.Context, since, until time.Time) ([]BenchmarkRun, error)
 
-	// MarkSupersededRuns marks older intraweek runs as superseded when a new model is used
-	// in the same cycle. It updates runs where:
+	// MarkSupersededRuns marks older intraweek runs of the same model as superseded when a newer run
+	// of that model is created in the same cycle. It updates runs where:
 	// - agent_id = agentID
 	// - run_kind = 'intraweek'
-	// - run_at < newRunAt
-	// - model != newModel
-	// - run_at >= cycleStart and run_at < cycleEnd
+	// - model = newModel (same model)
+	// - run_at < newRunAt (older run)
+	// - run_at >= cycleStart and run_at < cycleEnd (same cycle)
 	// Setting run_status = 'superseded'. This is called only for intraweek runs after
 	// inserting new runs. Weekly runs are never marked superseded.
 	MarkSupersededRuns(ctx context.Context, agentID string, newRunAt time.Time, newModel string, cycleStart, cycleEnd time.Time) error
