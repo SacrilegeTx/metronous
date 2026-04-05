@@ -1135,24 +1135,25 @@ func (m ChartsModel) Update(msg tea.Msg) (ChartsModel, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "k":
-			m.cursorDayIndex--
-			if m.cursorDayIndex < 0 {
-				m.cursorDayIndex = 0
+			if m.cursorDayIndex > 0 {
+				m.cursorDayIndex--
+				return m, nil
 			}
-			return m, nil
-		case "l":
-			m.cursorDayIndex++
-			// Clamp to days in month.
-			if m.cursorDayIndex >= daysInMonth(m.monthStart) {
-				m.cursorDayIndex = daysInMonth(m.monthStart) - 1
-			}
-			return m, nil
-		case "left":
+			// At the first day of the month: move to the previous month and
+			// jump to the last day so k/l alone handle both day and month
+			// navigation without using arrow keys.
 			m.monthStart = m.monthStart.AddDate(0, -1, 0)
-			m.cursorDayIndex = 0
+			m.cursorDayIndex = daysInMonth(m.monthStart) - 1
 			m.loading = true
 			return m, m.fetchChartData()
-		case "right":
+		case "l":
+			monthDays := daysInMonth(m.monthStart)
+			if m.cursorDayIndex < monthDays-1 {
+				m.cursorDayIndex++
+				return m, nil
+			}
+			// At the last day of the month: move to the next month and reset
+			// the cursor so k/l alone handle both day and month navigation.
 			m.monthStart = m.monthStart.AddDate(0, 1, 0)
 			m.cursorDayIndex = 0
 			m.loading = true
@@ -1226,7 +1227,7 @@ func (m ChartsModel) fetchChartData() tea.Cmd {
 
 func (m ChartsModel) View() string {
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render("Charts")
-	sub := fmt.Sprintf("Monthly cost chart plus benchmark summary cards — %s  (←/→ month, k/l or mouse only affect the cost chart)", m.monthStart.Format("January 2006"))
+	sub := fmt.Sprintf("Monthly cost chart plus benchmark summary cards — %s  (←/→ switch views; k/l or mouse move within and across months in the cost chart)", m.monthStart.Format("January 2006"))
 
 	legendLine := lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("Legend: R = Responsibility score, H = Health score")
 	lines := []string{title + "\n" + sub, legendLine}

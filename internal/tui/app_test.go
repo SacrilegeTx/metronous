@@ -122,9 +122,8 @@ func TestAppTabSwitchingByArrowKeys(t *testing.T) {
 	// right → TabConfig
 	updated, _ = sendSpecialKey(m, tea.KeyRight)
 	m = updated.(*tui.AppModel)
-	// When on Charts, left/right should not switch tabs.
-	if m.CurrentTab != tui.TabCharts {
-		t.Errorf("expected TabCharts after right arrow, got %d", m.CurrentTab)
+	if m.CurrentTab != tui.TabConfig {
+		t.Errorf("expected TabConfig after right arrow, got %d", m.CurrentTab)
 	}
 
 	// left → TabCharts
@@ -134,12 +133,11 @@ func TestAppTabSwitchingByArrowKeys(t *testing.T) {
 		t.Errorf("expected TabCharts after left arrow, got %d", m.CurrentTab)
 	}
 
-	// left → TabBenchmarkDetailed
+	// left → TabTracking
 	updated, _ = sendSpecialKey(m, tea.KeyLeft)
 	m = updated.(*tui.AppModel)
-	// When on Charts, left/right should not switch tabs.
-	if m.CurrentTab != tui.TabCharts {
-		t.Errorf("expected TabCharts after left arrow, got %d", m.CurrentTab)
+	if m.CurrentTab != tui.TabTracking {
+		t.Errorf("expected TabTracking after left arrow, got %d", m.CurrentTab)
 	}
 }
 
@@ -1519,7 +1517,7 @@ func TestBenchmarkSummaryActiveMarkerInView(t *testing.T) {
 }
 
 // TestChartsPanelsAndNavigation verifies the Charts tab renders the cost chart
-// plus summary cards and keeps month/day navigation working.
+// plus summary cards and keeps day/month navigation working with k/l.
 func TestChartsPanelsAndNavigation(t *testing.T) {
 	monthStart := time.Date(time.Now().Year(), time.Now().Month(), 1, 0, 0, 0, 0, time.Local)
 	m := tui.NewChartsModel(nil, nil)
@@ -1540,6 +1538,7 @@ func TestChartsPanelsAndNavigation(t *testing.T) {
 		t.Fatalf("expected performance selection to be populated, got %v", got)
 	}
 
+	// Day navigation within the current month.
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
 	if tui.GetChartsCursor(m) != 1 {
 		t.Fatalf("expected cursor=1 after l, got %d", tui.GetChartsCursor(m))
@@ -1551,13 +1550,27 @@ func TestChartsPanelsAndNavigation(t *testing.T) {
 	}
 
 	originalMonth := tui.GetChartsMonthStart(m)
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
-	if !tui.GetChartsMonthStart(m).Before(originalMonth) {
-		t.Fatalf("expected month to move backward with left arrow")
+	// Drive the cursor to the last day of the month, then use l/k to move
+	// across month boundaries.
+	daysInMonth := time.Date(monthStart.Year(), monthStart.Month()+1, 0, 0, 0, 0, 0, monthStart.Location()).Day()
+	for i := 0; i < daysInMonth-1; i++ {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if tui.GetChartsCursor(m) != daysInMonth-1 {
+		t.Fatalf("expected cursor=%d at last day, got %d", daysInMonth-1, tui.GetChartsCursor(m))
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("l")})
+	if !tui.GetChartsMonthStart(m).After(originalMonth) {
+		t.Fatalf("expected month to move forward when pressing l at last day")
+	}
+	if tui.GetChartsCursor(m) != 0 {
+		t.Fatalf("expected cursor=0 after moving to next month, got %d", tui.GetChartsCursor(m))
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
 	if !sameMonthForTest(tui.GetChartsMonthStart(m), originalMonth) {
-		t.Fatalf("expected month to return after right arrow")
+		t.Fatalf("expected month to return after pressing k at first day")
 	}
 
 	view := m.View()

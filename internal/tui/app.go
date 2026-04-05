@@ -390,7 +390,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "left":
-			// Allow Charts tab to handle month navigation with arrow keys.
 			if m.showLanding {
 				if m.landingCursor > 0 {
 					m.landingCursor--
@@ -399,9 +398,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				return m, nil
-			}
-			if m.CurrentTab == TabCharts {
-				break
 			}
 			oldTab := m.CurrentTab
 			if m.CurrentTab > 0 {
@@ -415,7 +411,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "right":
-			// Allow Charts tab to handle month navigation with arrow keys.
 			if m.showLanding {
 				max := m.landingQuitIndex
 				if m.landingCursor < max {
@@ -425,9 +420,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				return m, nil
-			}
-			if m.CurrentTab == TabCharts {
-				break
 			}
 			oldTab := m.CurrentTab
 			if int(m.CurrentTab) < numTabs-1 {

@@ -77,6 +77,57 @@ func (m mockChartsBenchmarkStore) MarkSupersededRuns(context.Context, string, ti
 }
 func (m mockChartsBenchmarkStore) Close() error { return nil }
 
+// liveChartsEventStore is a test double that returns different daily cost
+// snapshots on successive calls so we can verify that the charts view reacts
+// to live data changes (cost chart, legend, and tooltip) instead of only the
+// aggregated monthly total.
+type liveChartsEventStore struct {
+	rowsByCall [][]store.DailyCostByModelRow
+	callIdx    int
+}
+
+func (m *liveChartsEventStore) InsertEvent(context.Context, store.Event) (string, error) {
+	return "", nil
+}
+
+func (m *liveChartsEventStore) QueryEvents(context.Context, store.EventQuery) ([]store.Event, error) {
+	return nil, nil
+}
+
+func (m *liveChartsEventStore) CountEvents(context.Context, store.EventQuery) (int, error) {
+	return 0, nil
+}
+
+func (m *liveChartsEventStore) QuerySessions(context.Context, store.SessionQuery) ([]store.SessionSummary, error) {
+	return nil, nil
+}
+
+func (m *liveChartsEventStore) GetSessionEvents(context.Context, string) ([]store.Event, error) {
+	return nil, nil
+}
+
+func (m *liveChartsEventStore) GetAgentEvents(context.Context, string, time.Time) ([]store.Event, error) {
+	return nil, nil
+}
+
+func (m *liveChartsEventStore) GetAgentSummary(context.Context, string) (store.AgentSummary, error) {
+	return store.AgentSummary{}, nil
+}
+
+func (m *liveChartsEventStore) QueryDailyCostByModel(context.Context, time.Time, time.Time) ([]store.DailyCostByModelRow, error) {
+	if len(m.rowsByCall) == 0 {
+		return nil, nil
+	}
+	if m.callIdx >= len(m.rowsByCall) {
+		return m.rowsByCall[len(m.rowsByCall)-1], nil
+	}
+	rows := m.rowsByCall[m.callIdx]
+	m.callIdx++
+	return rows, nil
+}
+
+func (m *liveChartsEventStore) Close() error { return nil }
+
 func TestChartsFetchRanksMonthlyCards(t *testing.T) {
 	monthStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	es := mockChartsEventStore{rows: []store.DailyCostByModelRow{
@@ -118,6 +169,67 @@ func TestChartsFetchRanksMonthlyCards(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected %q in view, got %q", want, view)
 		}
+	}
+}
+
+// TestChartsLiveRefreshKeepsChartLegendAndTooltipInSync verifies that when the
+// underlying EventStore returns updated daily cost data (simulating new live
+// events), the cost chart, legend, and tooltip all refresh consistently every
+// time fetchChartData is called – matching the updated monthly total spent.
+func TestChartsLiveRefreshKeepsChartLegendAndTooltipInSync(t *testing.T) {
+	monthStart := time.Date(2026, 4, 1, 0, 0, 0, 0, time.Local)
+	day := monthStart
+
+	es := &liveChartsEventStore{
+		rowsByCall: [][]store.DailyCostByModelRow{
+			// First snapshot: $1 total for alpha.
+			{{Day: day, Model: "alpha", TotalCostUSD: 1}},
+			// Second snapshot: cost doubles to $2 for alpha.
+			{{Day: day, Model: "alpha", TotalCostUSD: 2}},
+		},
+	}
+
+	m := NewChartsModel(es, nil)
+	m.monthStart = monthStart
+	m.width = 120
+	m.height = 40
+
+	// Initial fetch.
+	msg1 := m.fetchChartData()()
+	data1, ok := msg1.(ChartsDataMsg)
+	if !ok {
+		t.Fatalf("expected ChartsDataMsg, got %T", msg1)
+	}
+	m, _ = m.Update(data1)
+	view1 := m.View()
+
+	if !strings.Contains(view1, "Total Spent of the Month: $1.00") {
+		t.Fatalf("expected initial total spent $1.00, got view: %q", view1)
+	}
+	if !strings.Contains(view1, "Tooltip: "+day.Format("Jan 02")+" ($1.00)") {
+		t.Fatalf("expected tooltip with $1.00 for selected day, got view: %q", view1)
+	}
+	if !strings.Contains(view1, "Legend:") || !strings.Contains(view1, "alpha") || !strings.Contains(view1, "($1.00)") {
+		t.Fatalf("expected legend to show alpha with $1.00, got view: %q", view1)
+	}
+
+	// Second fetch simulating the 2s refresh with updated costs.
+	msg2 := m.fetchChartData()()
+	data2, ok := msg2.(ChartsDataMsg)
+	if !ok {
+		t.Fatalf("expected ChartsDataMsg, got %T", msg2)
+	}
+	m, _ = m.Update(data2)
+	view2 := m.View()
+
+	if !strings.Contains(view2, "Total Spent of the Month: $2.00") {
+		t.Fatalf("expected refreshed total spent $2.00, got view: %q", view2)
+	}
+	if !strings.Contains(view2, "Tooltip: "+day.Format("Jan 02")+" ($2.00)") {
+		t.Fatalf("expected tooltip to refresh to $2.00, got view: %q", view2)
+	}
+	if !strings.Contains(view2, "Legend:") || !strings.Contains(view2, "alpha") || !strings.Contains(view2, "($2.00)") {
+		t.Fatalf("expected legend to refresh alpha total to $2.00, got view: %q", view2)
 	}
 }
 
