@@ -48,9 +48,12 @@ func NewRunner(
 // agentResult bundles the verdict and the pending BenchmarkRun for a single agent.
 // The run is not yet persisted when this struct is returned — the ArtifactPath
 // field is filled in by RunWeekly after the consolidated artifact is written.
+// CurrentModel is the model with the most events during the evaluation window —
+// used to determine which model should be marked as 'active' vs 'superseded'.
 type agentResult struct {
-	verdict decision.Verdict
-	run     store.BenchmarkRun
+	verdict      decision.Verdict
+	run          store.BenchmarkRun
+	currentModel string // Model with most events in the window (the "active" one)
 }
 
 // RunWeekly executes the scheduled weekly benchmark pipeline.
@@ -143,8 +146,22 @@ func (r *Runner) run(ctx context.Context, kind store.RunKindType, start, end tim
 	}
 
 	// Persist each BenchmarkRun with the artifact path now populated.
+	// For intraweek runs, mark only the current model (most frequent) as 'active',
+	// and supersede others. For weekly runs, all are marked active initially,
+	// and cross-cycle superseding is handled separately.
 	for i := range results {
 		results[i].run.ArtifactPath = artifactPath
+		if kind == store.RunKindIntraweek {
+			// For intraweek runs, mark active vs superseded based on which model is current
+			if results[i].run.Model == results[i].currentModel {
+				results[i].run.Status = store.RunStatusActive
+			} else {
+				results[i].run.Status = store.RunStatusSuperseded
+			}
+		} else {
+			// For weekly runs, all are initially active (cross-cycle superseding handled below)
+			results[i].run.Status = store.RunStatusActive
+		}
 		if err := r.benchmarkStore.SaveRun(ctx, results[i].run); err != nil {
 			r.logger.Error("failed to save benchmark run",
 				zap.String("agent_id", results[i].run.AgentID),
@@ -211,7 +228,19 @@ func (r *Runner) processAgentAllModels(ctx context.Context, agentID string, star
 		return nil, nil
 	}
 
-	// 3. Compute metrics for every model independently.
+	// 3. Determine the current model (the one with the most events — indicates active usage).
+	// This is used to mark only one model per agent as 'active' in an intraweek cycle.
+	// In case of ties, pick the model that comes first alphabetically (deterministic).
+	var currentModel string
+	var maxEvents int
+	for model, evts := range modelEvents {
+		if len(evts) > maxEvents || (len(evts) == maxEvents && model < currentModel) {
+			currentModel = model
+			maxEvents = len(evts)
+		}
+	}
+
+	// 4. Compute metrics for every model independently.
 	perModel := make(map[string]modelMetrics, len(modelEvents))
 	for model, evts := range modelEvents {
 		m := benchmark.AggregateMetrics(r.logger, agentID, evts)
@@ -220,7 +249,7 @@ func (r *Runner) processAgentAllModels(ctx context.Context, agentID string, star
 		perModel[model] = modelMetrics{metrics: m, verdict: v}
 	}
 
-	// 4. Build results, replacing the static recommended model with the best
+	// 5. Build results, replacing the static recommended model with the best
 	// alternative derived from real benchmark data for this agent.
 	var results []agentResult
 	for model, pm := range perModel {
@@ -278,7 +307,11 @@ func (r *Runner) processAgentAllModels(ctx context.Context, agentID string, star
 		// Also patch the verdict so the artifact reflects the data-driven recommendation.
 		v := pm.verdict
 		v.RecommendedModel = recommended
-		results = append(results, agentResult{verdict: v, run: run})
+		results = append(results, agentResult{
+			verdict:      v,
+			run:          run,
+			currentModel: currentModel,
+		})
 
 		r.logger.Info("agent/model benchmark complete",
 			zap.String("agent_id", agentID),

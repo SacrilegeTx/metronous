@@ -91,6 +91,29 @@ WHERE run_status = 'active'
     GROUP BY agent_id, model
   )`
 
+// markHistoricalSupersededRunsByCountHierarchy is an improved migration that uses sample_size
+// as the primary heuristic to identify which run per (agent_id, model) is truly "current".
+// For each (agent_id, model) pair with multiple runs, mark all except the one with the
+// highest sample_size as 'superseded'. In case of ties (same sample_size), the most recent
+// run (highest run_at) is kept active. This is more robust than MAX(run_at) when models
+// in an intraweek cycle have the same timestamp.
+const markHistoricalSupersededRunsByCountHierarchy = `
+UPDATE benchmark_runs
+SET run_status = 'superseded'
+WHERE run_status = 'active'
+  AND id NOT IN (
+    -- For each (agent_id, model) pair, find the run to keep as 'active':
+    -- the one with highest sample_size, breaking ties by highest run_at.
+    SELECT id FROM (
+      SELECT id,
+             ROW_NUMBER() OVER (PARTITION BY agent_id, model 
+                                ORDER BY sample_size DESC, run_at DESC) as rn
+      FROM benchmark_runs
+      WHERE run_status = 'active'
+    ) ranked
+    WHERE rn = 1
+  )`
+
 // BenchmarkStore is a SQLite-backed implementation of store.BenchmarkStore.
 type BenchmarkStore struct {
 	writeDB *sql.DB
@@ -188,8 +211,17 @@ func ApplyBenchmarkMigrations(ctx context.Context, db *sql.DB) error {
 
 	// Apply data migrations (after all columns exist).
 	// markHistoricalSupersededRuns is idempotent: it only affects runs with status='active'
-	// and marks older ones per (agent_id, model) as 'superseded'. Safe to re-run.
+	// and marks older ones per (agent_id, model) as 'superseded' using MAX(run_at).
+	// Note: This is kept for backward compatibility but superseded by the next migration.
 	if err := applyDataMigration(ctx, db, markHistoricalSupersededRuns, "mark_historical_superseded_runs"); err != nil {
+		return err
+	}
+
+	// markHistoricalSupersededRunsByCountHierarchy is a more robust migration that uses
+	// sample_size to identify the "current" model per (agent_id, model) pair.
+	// This handles the case where models in an intraweek cycle have the same timestamp.
+	// It is idempotent: only affects runs with status='active', and respects already-superseded runs.
+	if err := applyDataMigration(ctx, db, markHistoricalSupersededRunsByCountHierarchy, "mark_historical_superseded_runs_by_count"); err != nil {
 		return err
 	}
 
@@ -198,14 +230,18 @@ func ApplyBenchmarkMigrations(ctx context.Context, db *sql.DB) error {
 
 // SaveRun persists a benchmark run. If run.ID is empty, a UUID is generated.
 // If RunKind is empty it defaults to RunKindWeekly for backward compatibility.
-// SaveRun always inserts run_status='active'; run.Status is not used here.
-// Status transitions are handled only by MarkSupersededRuns.
+// SaveRun uses run.Status directly (set by the caller). If Status is empty or
+// RunStatusActive, it defaults to RunStatusActive for backward compatibility.
+// Status transitions (active → superseded) are handled by MarkSupersededRuns.
 func (bs *BenchmarkStore) SaveRun(ctx context.Context, run store.BenchmarkRun) error {
 	if run.ID == "" {
 		run.ID = uuid.New().String()
 	}
 	if run.RunKind == "" {
 		run.RunKind = store.RunKindWeekly
+	}
+	if run.Status == "" {
+		run.Status = store.RunStatusActive
 	}
 
 	const q = `
@@ -252,7 +288,7 @@ func (bs *BenchmarkStore) SaveRun(ctx context.Context, run store.BenchmarkRun) e
 		run.AvgCompletionTokens,
 		run.AvgTurnMs,
 		run.P95TurnMs,
-		string(store.RunStatusActive),
+		string(run.Status),
 		run.RawModel,
 	)
 	if err != nil {
