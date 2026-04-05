@@ -427,8 +427,10 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 		// Build sorted rows.
 		var rows []summaryRow
 		for k, a := range aggMap {
-			// Display filter: skip pairs not active in the last 4 weekly cycles.
-			if !isActiveInRecentCycles(a) {
+			// Display filter: skip pairs not active in the last 4 weekly cycles,
+			// but always keep the agent's currently active model (matches detailed view).
+			isActive := activeModelByAgent[k.agent] == k.model
+			if !isActive && !isActiveInRecentCycles(a) {
 				continue
 			}
 
@@ -465,7 +467,7 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 				AgentID:      k.agent,
 				Model:        displayModel,
 				RawModel:     a.rawModel,
-				IsActive:     activeModelByAgent[k.agent] == k.model,
+				IsActive:     isActive,
 				Runs:         a.runs,
 				AvgAccuracy:  avgAcc,
 				AvgTurnMs:    avgP95,
