@@ -31,9 +31,9 @@ type summaryRow struct {
 	Model        string
 	RawModel     string  // un-normalized model name with provider prefix (matches detailed view)
 	IsActive     bool    // true when this model has run_status='active' in its most recent run
-	Runs         int     // total benchmark runs (weekly only)
-	AvgAccuracy  float64 // weighted average accuracy (weekly runs only)
-	AvgTurnMs    float64 // weighted average turn duration (weekly runs only)
+	Runs         int     // total benchmark runs (weekly + intraweek)
+	AvgAccuracy  float64 // weighted average accuracy (all non-insufficient runs)
+	AvgTurnMs    float64 // weighted average turn duration (all non-insufficient runs)
 	TotalCostUSD float64 // cost from the run used for LastVerdict
 	HealthScore  float64 // composite 0-100 (higher is better)
 	LastVerdict  store.VerdictType
@@ -212,11 +212,14 @@ func (m BenchmarkSummaryModel) Update(msg tea.Msg) (BenchmarkSummaryModel, tea.C
 // fetchSummary returns a command that queries the BenchmarkStore and builds summary rows
 // aggregated per (agent, model) pair.
 //
-// Aggregation scope: only weekly runs (RunKind == RunKindWeekly) are used for metric
-// averages (accuracy, response time, ROI). This is consistent with the trend logic in
-// the detailed view which also uses weekly verdicts. Intraweek runs are noisier (smaller
-// windows) and including them would skew averages. The run count (Runs field) also counts
-// weekly-only runs.
+// Aggregation scope: ALL runs (weekly + intraweek) are included in weighted metric
+// averages (accuracy, response time, ROI, cost). More data produces better averages.
+// The run count (Runs field) counts all runs. INSUFFICIENT_DATA runs are excluded from
+// weighted averages but kept as fallback metrics.
+//
+// Display filter: only (agent, model) pairs that had at least one run in the 4 most
+// recent distinct weekly cycles (by WindowStart) are shown. Older models are silently
+// excluded.
 //
 // Active model marker: matches the detailed view — the model whose most recent run has
 // run_status='active' is marked with IsActive=true. Only one model per agent is active.
@@ -240,8 +243,8 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 		type key struct{ agent, model string }
 		type agg struct {
 			rawModel     string  // most recent RawModel for display
-			runs         int     // weekly-only run count
-			totalSamples int     // weighted sum denominator (weekly, non-insufficient)
+			runs         int     // total run count (weekly + intraweek)
+			totalSamples int     // weighted sum denominator (non-insufficient runs)
 			sumAccuracy  float64 // weighted accuracy sum
 			sumP95       float64 // weighted turn ms sum
 			sumROI       float64 // weighted ROI sum
@@ -253,11 +256,16 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 			lastStatus   store.RunStatus // status of the actual most recent run for this model
 			// Fallback metrics from the most recent run (used when all runs are
 			// INSUFFICIENT_DATA so we don't display misleading 0% accuracy).
-			lastAccuracy float64
-			lastP95      float64
-			lastROI      float64
+			lastAccuracy    float64
+			lastP95         float64
+			lastROI         float64
+			weeklyWindowIDs map[int64]bool // distinct weekly WindowStart values (ms UTC)
 		}
 		aggMap := make(map[key]*agg)
+
+		// Collect all distinct weekly WindowStart values across all agents to determine
+		// the 4 most recent weekly cycles for the display filter.
+		weeklyWindowSet := make(map[int64]bool)
 
 		for _, agentID := range agentIDs {
 			// Fetch up to 200 runs to cover ~4 years of weekly data.
@@ -272,20 +280,34 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 				k := key{agentID, store.NormalizeModelName(r.Model)}
 				a := aggMap[k]
 				if a == nil {
-					a = &agg{}
+					a = &agg{weeklyWindowIDs: make(map[int64]bool)}
 					aggMap[k] = a
 				}
 
-				// Metric averages use weekly runs only — intraweek runs are excluded
-				// because their shorter windows produce noisier accuracy estimates.
+				// Track distinct weekly WindowStart timestamps for the display filter.
+				// Pre-migration rows have window_start=0; fall back to RunAt truncated
+				// to the nearest week boundary (Sunday midnight UTC) as a proxy so that
+				// old weekly runs are not silently excluded from the recent-cycles filter.
 				isWeekly := r.RunKind == store.RunKindWeekly || r.RunKind == ""
+				if isWeekly {
+					var wID int64
+					if !r.WindowStart.IsZero() {
+						wID = r.WindowStart.UTC().UnixMilli()
+					} else {
+						// Approximate the weekly window using RunAt rounded down to
+						// the most recent Sunday midnight UTC (7-day boundary).
+						wID = r.RunAt.UTC().Truncate(7 * 24 * time.Hour).UnixMilli()
+					}
+					weeklyWindowSet[wID] = true
+					a.weeklyWindowIDs[wID] = true
+				}
 
 				// INSUFFICIENT_DATA runs are excluded from weighted metric averages
 				// because they have too few samples to be statistically meaningful.
 				// However we keep their raw metrics as a fallback so that pairs
 				// where ALL runs are insufficient don't show a misleading 0% accuracy.
 				isInsufficient := r.Verdict == store.VerdictInsufficientData || r.SampleSize < 50
-				if isWeekly && !isInsufficient {
+				if !isInsufficient {
 					samples := r.SampleSize
 					if samples <= 0 {
 						samples = 1
@@ -305,9 +327,7 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 						a.roiSamples += samples
 					}
 				}
-				if isWeekly {
-					a.runs++
-				}
+				a.runs++
 
 				// Track the actual most recent run for status and RawModel (all runs,
 				// not just weekly), because run_status='active' is set on the most recent
@@ -365,20 +385,60 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 			}
 		}
 
+		// Compute the 4 most recent distinct weekly cycle timestamps.
+		// Only (agent, model) pairs that had at least one run in any of these cycles
+		// will be displayed; older models are silently excluded.
+		const recentWeeklyCycles = 4
+		recentWeeklyIDs := make(map[int64]bool)
+		if len(weeklyWindowSet) > 0 {
+			allWeeklyIDs := make([]int64, 0, len(weeklyWindowSet))
+			for id := range weeklyWindowSet {
+				allWeeklyIDs = append(allWeeklyIDs, id)
+			}
+			sort.Slice(allWeeklyIDs, func(i, j int) bool { return allWeeklyIDs[i] > allWeeklyIDs[j] })
+			limit := recentWeeklyCycles
+			if limit > len(allWeeklyIDs) {
+				limit = len(allWeeklyIDs)
+			}
+			for _, id := range allWeeklyIDs[:limit] {
+				recentWeeklyIDs[id] = true
+			}
+		}
+		// isActiveInRecentCycles returns true when the (agent, model) pair had at least
+		// one weekly run in any of the 4 most recent weekly cycles. When no weekly cycles
+		// exist at all (DB has only intraweek runs), the filter is skipped and all pairs
+		// are shown.
+		isActiveInRecentCycles := func(a *agg) bool {
+			if len(recentWeeklyIDs) == 0 {
+				return true // no weekly runs in DB — skip filter
+			}
+			for id := range a.weeklyWindowIDs {
+				if recentWeeklyIDs[id] {
+					return true
+				}
+			}
+			return false
+		}
+
 		minROI := m.minROI
 
 		// Build sorted rows.
 		var rows []summaryRow
 		for k, a := range aggMap {
+			// Display filter: skip pairs not active in the last 4 weekly cycles.
+			if !isActiveInRecentCycles(a) {
+				continue
+			}
+
 			avgAcc := 0.0
 			avgP95 := 0.0
 			avgROI := 0.0
 			if a.totalSamples > 0 {
-				// We have valid (non-insufficient) weekly runs — use weighted averages.
+				// We have valid (non-insufficient) runs — use weighted averages.
 				avgAcc = a.sumAccuracy / float64(a.totalSamples)
 				avgP95 = a.sumP95 / float64(a.totalSamples)
 			} else {
-				// All weekly runs were INSUFFICIENT_DATA — use the most recent run's raw
+				// All runs were INSUFFICIENT_DATA — use the most recent run's raw
 				// metrics so we don't display a misleading 0% accuracy / 0ms latency.
 				avgAcc = a.lastAccuracy
 				avgP95 = a.lastP95
@@ -413,7 +473,7 @@ func (m BenchmarkSummaryModel) fetchSummary() tea.Cmd {
 		}
 
 		// Sort: cascade sort matching the Detailed view pattern.
-		// NO DATA rows (Runs==0, no weekly runs) go last.
+		// NO DATA rows (Runs==0) go last.
 		// Within each agent: active model (IsActive=true) first, then other models by health desc.
 		// Agents are ordered by their active model's health score desc (or best model if no active).
 		// Tiebreaker: agentID asc, then model asc.
@@ -661,7 +721,7 @@ func (m *BenchmarkSummaryModel) View() string {
 		divider := strings.Repeat("─", totalWidth(summaryColWidths))
 		sb.WriteString(dimStyle.Render(divider) + "\n")
 		sb.WriteString(detailLabelStyle.Render("Agent History Summary") + "\n")
-		sb.WriteString(dimStyle.Render("Weighted historical averages across all weekly benchmark cycles") + "\n")
+		sb.WriteString(dimStyle.Render("Weighted historical averages (weekly + intraweek) — showing models active in the last 4 weekly cycles") + "\n")
 		sb.WriteString(dimStyle.Render(divider) + "\n")
 		writeDetailField(&sb, "Agent", r.AgentID)
 		writeDetailField(&sb, "Model", r.Model)
