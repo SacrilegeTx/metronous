@@ -4,6 +4,10 @@
 
 # Metronous
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/kiosvantra/metronous?display_name=tag)](https://github.com/kiosvantra/metronous/releases)
+[![GitHub stars](https://img.shields.io/github/stars/kiosvantra/metronous?style=social)](https://github.com/kiosvantra/metronous/stargazers)
+
 > Local AI agent telemetry, benchmarking, and model calibration for OpenCode agents.
 
 *Originally developed within the Gentle AI ecosystem.*
