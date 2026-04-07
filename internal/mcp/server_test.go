@@ -313,13 +313,22 @@ func TestServeWithHealthEndpoint(t *testing.T) {
 	}()
 
 	// Give the HTTP server a moment to start.
-	time.Sleep(200 * time.Millisecond)
-
-	// Read the port file (now a method on *Server, instance-scoped to data-dir).
-	port, err := srv.ReadPortFile()
-	if err != nil {
-		t.Fatalf("ReadPortFile: %v", err)
+	start := time.Now()
+	var port int
+	var err error
+	// On slower CI runners (and on Windows), the port file can be created
+	// slightly later than a fixed sleep.
+	for {
+		port, err = srv.ReadPortFile()
+		if err == nil {
+			break
+		}
+		if time.Since(start) > 5*time.Second {
+			t.Fatalf("ReadPortFile (timeout): %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
+	// Basic sanity check.
 	if port <= 0 || port > 65535 {
 		t.Fatalf("invalid port from port file: %d", port)
 	}
