@@ -3,6 +3,9 @@ package mcp
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -492,22 +495,84 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 // containing a JSON ingest payload and dispatches them to the registered "ingest"
 // tool handler.  This allows the OpenCode plugin to send telemetry via HTTP while
 // OpenCode itself owns the stdio pipe for the MCP protocol.
+//
+// Authentication:
+//   - If METRONOUS_INGEST_TOKEN is set (env var), requests MUST include the matching
+//     token in the X-Metronous-Auth header (exact match).
+//   - If the token is not set, requests are accepted without authentication (legacy mode).
+//
+// The header value can be either:
+//   - Plain token (backward compatibility): exact match against METRONOUS_INGEST_TOKEN
+//   - HMAC signature (recommended): "sha256:<hex-signature>" where signature is
+//     HMAC-SHA256(secret, request-body)
 func (s *Server) ingestHandler(ctx context.Context) http.HandlerFunc {
+	// Try to get token from env, fall back to reading from ingest.key file
 	expectedToken := os.Getenv(ingestAuthEnvVar)
+	if expectedToken == "" {
+		// Try to read from ingest.key file
+		keyPath := s.ingestKeyPath()
+		if data, err := os.ReadFile(keyPath); err == nil {
+			expectedToken = strings.TrimSpace(string(data))
+		}
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
+		// Authenticate if token is configured
 		if expectedToken != "" {
 			provided := r.Header.Get(ingestAuthHeader)
 			if provided == "" {
-				s.logger.Warn("unauthenticated ingest request accepted during transition",
-					zap.String("remote_addr", r.RemoteAddr))
-			} else if provided != expectedToken {
-				s.logger.Warn("ingest request with invalid auth token accepted during transition",
-					zap.String("remote_addr", r.RemoteAddr))
+				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
+
+			// Support both plain token and HMAC signature formats
+			valid := false
+			var bodyStr string
+
+			if strings.HasPrefix(provided, "sha256:") {
+				// HMAC signature mode - read body and verify
+				sig := provided[7:] // strip "sha256:" prefix
+				// Read body for HMAC verification
+				bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1024*1024))
+				if err != nil {
+					http.Error(w, "failed to read request body", http.StatusBadRequest)
+					return
+				}
+				bodyStr = string(bodyBytes)
+				// Compute expected HMAC
+				mac := hmac.New(sha256.New, []byte(expectedToken))
+				mac.Write([]byte(bodyStr))
+				expectedSig := hex.EncodeToString(mac.Sum(nil))
+				if hmac.Equal([]byte(sig), []byte(expectedSig)) {
+					valid = true
+				}
+				if !valid {
+					s.logger.Warn("invalid HMAC signature in ingest request",
+						zap.String("remote_addr", r.RemoteAddr))
+					http.Error(w, "invalid authentication signature", http.StatusUnauthorized)
+					return
+				}
+				// Re-create a reader from the body for subsequent handlers
+				r.Body = io.NopCloser(strings.NewReader(bodyStr))
+			} else {
+				// Plain token mode (backward compatibility)
+				if !hmac.Equal([]byte(provided), []byte(expectedToken)) {
+					s.logger.Warn("invalid auth token in ingest request",
+						zap.String("remote_addr", r.RemoteAddr))
+					http.Error(w, "invalid authentication token", http.StatusUnauthorized)
+					return
+				}
+				valid = true
+			}
+
+			if !valid {
+				http.Error(w, "authentication failed", http.StatusUnauthorized)
+				return
 			}
 		}
 
@@ -582,6 +647,28 @@ func (s *Server) portFilePath() string {
 		return ".metronous/mcp.port"
 	}
 	return filepath.Join(home, ".metronous", "mcp.port")
+}
+
+// dataDirPath returns the data directory path, or the default ~/.metronous/data
+// if not set.
+func (s *Server) dataDirPath() string {
+	s.mu.RLock()
+	dir := s.dataDir
+	s.mu.RUnlock()
+
+	if dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".metronous/data"
+	}
+	return filepath.Join(home, ".metronous", "data")
+}
+
+// ingestKeyPath returns the path to the shared secret file for ingest authentication.
+func (s *Server) ingestKeyPath() string {
+	return filepath.Join(s.dataDirPath(), "ingest.key")
 }
 
 // writePortFile persists port to the given path.
