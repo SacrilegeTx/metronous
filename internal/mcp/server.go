@@ -498,32 +498,62 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 //
 // Authentication:
 //   - If METRONOUS_INGEST_TOKEN is set (env var), requests MUST include the matching
-//     token in the X-Metronous-Auth header (exact match).
-//   - If the token is not set, requests are accepted without authentication (legacy mode).
+//     token in the X-Metronous-Auth header.
+//   - Otherwise, if {dataDir}/ingest.key exists and contains a token, requests MUST
+//     include that matching token in the X-Metronous-Auth header.
+//   - If neither source provides a token, requests are accepted without authentication
+//     (legacy mode).
 //
 // The header value can be either:
-//   - Plain token (backward compatibility): exact match against METRONOUS_INGEST_TOKEN
+//   - Plain token (backward compatibility): exact match against the configured secret
 //   - HMAC signature (recommended): "sha256:<hex-signature>" where signature is
 //     HMAC-SHA256(secret, request-body)
-func (s *Server) ingestHandler(ctx context.Context) http.HandlerFunc {
-	// Token is now resolved per-request to handle lazy key creation by plugin.
-	// The plugin creates ingest.key on first HTTP send, so we must read it
-	// at request time, not at handler registration time.
 
+// resolveIngestToken reads the authentication token on each request to handle
+// lazy key creation by the plugin (ingest.key may not exist at daemon start).
+func (s *Server) resolveIngestToken() string {
+	expectedToken := os.Getenv(ingestAuthEnvVar)
+	if expectedToken != "" {
+		return expectedToken
+	}
+
+	keyPath := s.ingestKeyPath()
+	data, err := os.ReadFile(keyPath)
+	if err != nil {
+		return ""
+	}
+
+	expectedToken = strings.TrimSpace(string(data))
+	if expectedToken == "" {
+		return ""
+	}
+
+	// Validate key format: must be exactly 64 hex characters (32 bytes)
+	if len(expectedToken) != 64 {
+		s.logger.Warn("ignoring invalid ingest key file",
+			zap.String("path", keyPath),
+			zap.Int("length", len(expectedToken)))
+		return ""
+	}
+	if _, err := hex.DecodeString(expectedToken); err != nil {
+		s.logger.Warn("ignoring invalid ingest key file",
+			zap.String("path", keyPath),
+			zap.Error(err))
+		return ""
+	}
+
+	return expectedToken
+}
+
+func (s *Server) ingestHandler(ctx context.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		// Resolve token for this request - try env first, then file
-		expectedToken := os.Getenv(ingestAuthEnvVar)
-		if expectedToken == "" {
-			keyPath := s.ingestKeyPath()
-			if data, err := os.ReadFile(keyPath); err == nil {
-				expectedToken = strings.TrimSpace(string(data))
-			}
-		}
+		// Resolve token per-request to handle lazy key creation by plugin
+		expectedToken := s.resolveIngestToken()
 
 		// Authenticate if token is configured
 		if expectedToken != "" {
@@ -540,18 +570,31 @@ func (s *Server) ingestHandler(ctx context.Context) http.HandlerFunc {
 			if strings.HasPrefix(provided, "sha256:") {
 				// HMAC signature mode - read body and verify
 				sig := provided[7:] // strip "sha256:" prefix
+				// Decode hex signature to raw bytes for comparison
+				providedSig, err := hex.DecodeString(sig)
+				if err != nil || len(providedSig) != sha256.Size {
+					s.logger.Warn("invalid HMAC signature format in ingest request",
+						zap.String("remote_addr", r.RemoteAddr))
+					http.Error(w, "invalid authentication signature", http.StatusUnauthorized)
+					return
+				}
 				// Read body for HMAC verification
 				bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1024*1024))
 				if err != nil {
-					http.Error(w, "failed to read request body", http.StatusBadRequest)
+					// Distinguish payload-too-large from other read errors
+					if _, ok := err.(*http.MaxBytesError); ok {
+						http.Error(w, "payload too large (max 1MB)", http.StatusRequestEntityTooLarge)
+					} else {
+						http.Error(w, "failed to read request body", http.StatusBadRequest)
+					}
 					return
 				}
 				bodyStr = string(bodyBytes)
-				// Compute expected HMAC
+				// Compute expected HMAC and compare raw bytes
 				mac := hmac.New(sha256.New, []byte(expectedToken))
 				mac.Write([]byte(bodyStr))
-				expectedSig := hex.EncodeToString(mac.Sum(nil))
-				if hmac.Equal([]byte(sig), []byte(expectedSig)) {
+				expectedSig := mac.Sum(nil)
+				if hmac.Equal(providedSig, expectedSig) {
 					valid = true
 				}
 				if !valid {
@@ -587,7 +630,11 @@ func (s *Server) ingestHandler(ctx context.Context) http.HandlerFunc {
 			return
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBytes)).Decode(&arguments); err != nil {
-			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			if _, ok := err.(*http.MaxBytesError); ok {
+				http.Error(w, "payload too large (max 1MB)", http.StatusRequestEntityTooLarge)
+			} else {
+				http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			}
 			return
 		}
 

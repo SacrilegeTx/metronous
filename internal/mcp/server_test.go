@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -606,8 +607,8 @@ func TestHTTPIngestEndpointWithAuthToken(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != context.Canceled {
-			t.Logf("ServeWithHealth error: %v", err)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("ServeWithHealth returned unexpected error: %v", err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Error("ServeWithHealth did not return after context cancel")
@@ -707,10 +708,12 @@ func TestHTTPIngestPayloadTooLarge(t *testing.T) {
 	dataDir := t.TempDir()
 	srv.SetDataDir(dataDir)
 
-	// Set token via file
-	tokenPath := dataDir + "/ingest.key"
-	token := "test-token-64-chars-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"
-	_ = os.WriteFile(tokenPath, []byte(token), 0600)
+	// Set token via file (64 hex chars)
+	tokenPath := filepath.Join(dataDir, "ingest.key")
+	token := "aaaa0000111122223333444455556666777788889999aaaabbbbccccddddeeee"
+	if err := os.WriteFile(tokenPath, []byte(token), 0600); err != nil {
+		t.Fatalf("failed to write ingest.key: %v", err)
+	}
 
 	mcp.RegisterIngestHandler(srv, func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{Content: []mcp.ContentItem{mcp.TextContent("ok")}}, nil
@@ -765,8 +768,8 @@ func TestHTTPIngestPayloadTooLarge(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != context.Canceled {
-			t.Logf("ServeWithHealth error: %v", err)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("ServeWithHealth returned unexpected error: %v", err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Error("ServeWithHealth did not return after context cancel")
@@ -783,10 +786,12 @@ func TestHTTPIngestFileBasedToken(t *testing.T) {
 	dataDir := t.TempDir()
 	srv.SetDataDir(dataDir)
 
-	// Write token to file instead of env var
-	tokenPath := dataDir + "/ingest.key"
-	token := "file-based-token-64-chars-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx"
-	_ = os.WriteFile(tokenPath, []byte(token), 0600)
+	// Write token to file instead of env var (64 hex chars)
+	tokenPath := filepath.Join(dataDir, "ingest.key")
+	token := "bbbb0000111122223333444455556666777788889999aaaabbbbccccddddeeee"
+	if err := os.WriteFile(tokenPath, []byte(token), 0600); err != nil {
+		t.Fatalf("failed to write ingest.key: %v", err)
+	}
 
 	mcp.RegisterIngestHandler(srv, func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{Content: []mcp.ContentItem{mcp.TextContent("ok")}}, nil
@@ -844,8 +849,8 @@ func TestHTTPIngestFileBasedToken(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != context.Canceled {
-			t.Logf("ServeWithHealth error: %v", err)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("ServeWithHealth returned unexpected error: %v", err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Error("ServeWithHealth did not return after context cancel")
